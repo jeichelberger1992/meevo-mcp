@@ -232,16 +232,18 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys
     import uvicorn
 
     _PORT = int(os.environ.get("PORT", 8000))
 
-    # The MCP SDK's TransportSecurityMiddleware validates Host + Content-Type on POSTs.
-    # Render's TLS proxy sends Host: meevo-mcp.onrender.com → rejected (421).
-    # Conduit follow-up POSTs may have wrong/missing Content-Type → rejected (400).
-    # This middleware also buffers the body for debug logging to diagnose any
-    # remaining 400 errors from the MCP handler itself (e.g. bad JSON body).
+    # MCP SDK's TransportSecurityMiddleware rejects Render's Host header (421).
+    # Fix: ASGI middleware that rewrites Host→127.0.0.1:443 and forces
+    # Content-Type: application/json on POSTs.
+    #
+    # Bug fixed: buffered_receive must forward to the original receive() after
+    # delivering the body, so SSE streams can detect client disconnect properly.
+    # Previously returning {"type":"http.disconnect"} caused the SSE stream to
+    # close immediately → "ASGI callable returned without completing response".
     class _FixHeaders:
         def __init__(self, app):
             self.app = app
@@ -258,7 +260,7 @@ if __name__ == "__main__":
             if scope.get("method") == "POST":
                 hdrs[b"content-type"] = b"application/json"
 
-                # Buffer the full body so we can inspect it and re-deliver it
+                # Buffer the full body so we can re-deliver it to the inner app
                 chunks = []
                 more_body = True
                 while more_body:
@@ -267,21 +269,23 @@ if __name__ == "__main__":
                         chunks.append(event.get("body", b""))
                         more_body = event.get("more_body", False)
                     else:
+                        # Non-request event (e.g. disconnect before body complete)
                         break
                 body = b"".join(chunks)
 
-                # Debug: log body so we can diagnose 400 errors
-                print(f"[MCPFIX] POST body({len(body)}): {body[:400]}", file=sys.stderr, flush=True)
-                print(f"[MCPFIX] POST hdrs: { {k.decode():v.decode() for k,v in hdrs.items()} }", file=sys.stderr, flush=True)
-
-                # Reconstruct a receive callable that replays the buffered body
+                # Reconstruct receive: deliver body once, then forward to
+                # original receive so SSE keepalive / disconnect detection works.
                 delivered = False
                 async def buffered_receive():
                     nonlocal delivered
                     if not delivered:
                         delivered = True
                         return {"type": "http.request", "body": body, "more_body": False}
-                    return {"type": "http.disconnect"}
+                    # Forward all subsequent calls to the original receive.
+                    # This is critical: SSE responses call receive() to detect
+                    # client disconnect; returning http.disconnect here would
+                    # close the stream prematurely.
+                    return await receive()
 
                 scope = {**scope, "headers": list(hdrs.items())}
                 await self.app(scope, buffered_receive, send)
