@@ -232,9 +232,31 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    # FastMCP wraps an internal MCPServer at mcp._mcp_server which exposes sse_app().
-    # We call it directly so we can bind to 0.0.0.0 and use Render's PORT env var.
-    # (mcp.run(transport="sse") hardcodes 127.0.0.1:8000 which Render can't reach.)
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+
+    # mcp.run(transport="sse") hardcodes host=127.0.0.1:8000 which Render can't reach.
+    # Build the SSE Starlette app manually so we can bind to 0.0.0.0 and Render's PORT.
     _PORT = int(os.environ.get("PORT", 8000))
-    _app = mcp._mcp_server.sse_app(host="0.0.0.0")
-    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
+
+    _sse = SseServerTransport("/messages/")
+
+    async def _handle_sse(request):
+        async with _sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as (read_stream, write_stream):
+            await mcp._mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp._mcp_server.create_initialization_options(),
+            )
+
+    _starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=_handle_sse),
+            Mount("/messages/", app=_sse.handle_post_message),
+        ]
+    )
+
+    uvicorn.run(_starlette_app, host="0.0.0.0", port=_PORT)
