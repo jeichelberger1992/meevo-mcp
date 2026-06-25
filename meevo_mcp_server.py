@@ -233,22 +233,23 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
+    import json as _json
     import uvicorn
 
     _PORT = int(os.environ.get("PORT", 8000))
 
     # MCP SDK's TransportSecurityMiddleware rejects Render's Host header.
-    # Fix: ASGI middleware that:
-    #  1. Rewrites Host → 127.0.0.1:443 and forces Content-Type: application/json
-    #  2. Buffers POST body so we can re-deliver it (fixes SSE stream closing)
-    #  3. Converts 400 "Missing session ID" → 202 Accepted for notifications
-    #     Conduit's background check sends the 'initialized' notification in
-    #     parallel with 'initialize', before receiving the session ID. The SDK
-    #     returns 400 for the sessionless notification; we return 202 instead
-    #     so Conduit considers the connection valid.
+    # Additionally, Conduit's background check sends tools/list in parallel
+    # with initialize, before receiving the session ID from the initialize
+    # response. This middleware:
+    #   1. Rewrites Host → 127.0.0.1:443 + forces Content-Type: application/json
+    #   2. Buffers POST body and properly forwards original receive() after delivery
+    #   3. Captures mcp-session-id from responses and injects it into follow-up
+    #      requests that lack a session ID (routing them to the correct session)
     class _FixHeaders:
         def __init__(self, app):
             self.app = app
+            self._last_session_id = None  # session ID from most recent initialize
 
         async def __call__(self, scope, receive, send):
             if scope.get("type") not in ("http", "websocket"):
@@ -261,7 +262,7 @@ if __name__ == "__main__":
             if scope.get("method") == "POST":
                 hdrs[b"content-type"] = b"application/json"
 
-                # Buffer the full body so we can re-deliver it
+                # Buffer the full body so we can inspect it and re-deliver it
                 chunks = []
                 more_body = True
                 while more_body:
@@ -273,8 +274,26 @@ if __name__ == "__main__":
                         break
                 body = b"".join(chunks)
 
-                # Reconstruct receive: deliver body once, then forward to original
-                # so SSE keepalive / disconnect detection works
+                # If this POST has no session ID, inject the last captured one
+                # for non-initialize requests. Conduit sends tools/list before
+                # reading the initialize response, so it can't include the
+                # session ID. Injecting it routes the request to the correct
+                # session instead of creating a new transport that fails.
+                if b"mcp-session-id" not in hdrs and self._last_session_id:
+                    try:
+                        method = _json.loads(body).get("method", "")
+                    except Exception:
+                        method = ""
+                    if method and method != "initialize":
+                        sid = self._last_session_id.encode()
+                        hdrs[b"mcp-session-id"] = sid
+                        print(
+                            f"[MCPFIX] Injected session for {method}",
+                            file=sys.stderr, flush=True
+                        )
+
+                # Reconstruct receive: deliver body once, then forward to
+                # original so SSE keepalive / disconnect detection works
                 delivered = False
                 async def buffered_receive():
                     nonlocal delivered
@@ -283,32 +302,14 @@ if __name__ == "__main__":
                         return {"type": "http.request", "body": body, "more_body": False}
                     return await receive()
 
-                # Intercept responses: convert 400 → 202 for sessionless notifications.
-                # Also log the body when this happens so we can verify the fix.
-                suppress_body = False
-
+                # Intercept responses to capture the session ID
+                _self = self
                 async def intercept_send(event):
-                    nonlocal suppress_body
                     if event.get("type") == "http.response.start":
-                        if event.get("status") == 400:
-                            print(
-                                f"[MCPFIX] 400->202 body({len(body)}): {body[:300]}",
-                                file=sys.stderr, flush=True
-                            )
-                            suppress_body = True
-                            await send({
-                                "type": "http.response.start",
-                                "status": 202,
-                                "headers": [
-                                    (b"content-length", b"0"),
-                                    (b"content-type", b"application/json"),
-                                ],
-                            })
-                            return
-                    if event.get("type") == "http.response.body" and suppress_body:
-                        await send({"type": "http.response.body", "body": b"", "more_body": False})
-                        suppress_body = False
-                        return
+                        resp_hdrs = dict(event.get("headers", []))
+                        sid = resp_hdrs.get(b"mcp-session-id")
+                        if sid:
+                            _self._last_session_id = sid.decode()
                     await send(event)
 
                 scope = {**scope, "headers": list(hdrs.items())}
