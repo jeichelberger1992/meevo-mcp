@@ -25,7 +25,6 @@ AUTH_URL     = os.environ.get("MEEVO_AUTH_URL",     "https://d18devmarketplace.m
 BASE_URL     = os.environ.get("MEEVO_BASE_URL",     "https://d18devpub.meevodev.com")
 TENANT_ID    = os.environ.get("MEEVO_TENANT_ID",    "4")
 LOCATION_ID  = os.environ.get("MEEVO_LOCATION_ID",  "3")
-SERVER_PORT  = int(os.environ.get("PORT", "8000"))
 
 # ─── Auth token cache ──────────────────────────────────────────────────────────
 _token: str | None = None
@@ -233,4 +232,4 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Run as SSE server (what Conduit's MCP connection expects)
-    mcp.run(transport="sse", host="0.0.0.0", port=SERVER_PORT)
+    mcp.run(transport="sse")
