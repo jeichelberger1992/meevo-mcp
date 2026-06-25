@@ -233,23 +233,26 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    from mcp.server.transport_security import TransportSecuritySettings
 
     _PORT = int(os.environ.get("PORT", 8000))
 
-    # Render terminates TLS and forwards requests with Host: meevo-mcp.onrender.com.
-    # The MCP SDK's DNS-rebinding protection rejects any host not in allowed_hosts
-    # (which defaults to an empty list).  Disable it — we're already behind
-    # Render's secure edge, so the attack surface this protects against is absent.
-    # Render terminates TLS and proxies with Host: meevo-mcp.onrender.com.
-    # Explicitly allowlist our hostname so the MCP SDK's DNS-rebinding protection
-    # lets the request through (enable_dns_rebinding_protection=True, host in allowed_hosts).
-    _security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=["meevo-mcp.onrender.com"],
-    )
-    try:
-        _app = mcp.streamable_http_app(transport_security=_security)
-    except TypeError:
-        _app = mcp.streamable_http_app(host="0.0.0.0")
+    # FastMCP auto-enables DNS-rebinding protection with allowed_hosts=["127.0.0.1:*", ...].
+    # Render's TLS proxy forwards requests with Host: meevo-mcp.onrender.com, which
+    # gets rejected with 421. Fix: wrap the ASGI app with middleware that rewrites
+    # the Host header to 127.0.0.1:443, matching the existing "127.0.0.1:*" pattern.
+    class _HostRewrite:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") in ("http", "websocket"):
+                headers = [
+                    (b"host", b"127.0.0.1:443") if k == b"host" else (k, v)
+                    for k, v in scope.get("headers", [])
+                ]
+                scope = {**scope, "headers": headers}
+            await self.app(scope, receive, send)
+
+    _inner = mcp.streamable_http_app()
+    _app = _HostRewrite(_inner)
     uvicorn.run(_app, host="0.0.0.0", port=_PORT)
