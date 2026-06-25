@@ -71,7 +71,7 @@ def _items(data: dict) -> list:
 
 
 # ─── MCP server ───────────────────────────────────────────────────────────────
-mcp = FastMCP("Meevo")
+mcp = FastMCP("Meevo", streamable_http_path="/sse")
 
 
 @mcp.tool()
@@ -232,31 +232,10 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.routing import Route, Mount
 
-    # mcp.run(transport="sse") hardcodes host=127.0.0.1:8000 which Render can't reach.
-    # Build the SSE Starlette app manually so we can bind to 0.0.0.0 and Render's PORT.
-    _PORT = int(os.environ.get("PORT", 8000))
-
-    _sse = SseServerTransport("/messages/")
-
-    async def _handle_sse(request):
-        async with _sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
-            await mcp._mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp._mcp_server.create_initialization_options(),
-            )
-
-    _starlette_app = Starlette(
-        routes=[
-            Route("/sse", endpoint=_handle_sse),
-            Mount("/messages/", app=_sse.handle_post_message),
-        ]
-    )
-
-    uvicorn.run(_starlette_app, host="0.0.0.0", port=_PORT)
+    # Use streamable HTTP transport (POST-based - what Conduit expects).
+      # Mounted at /sse to match the URL configured in Conduit.
+      # mcp.run() hardcodes host=127.0.0.1, so run uvicorn directly.
+      _PORT = int(os.environ.get("PORT", 8000))
+    _app = mcp.streamable_http_app()
+    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
