@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: meevo-mcp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python meevo_mcp_server.py
+    envVars:
+      - key: MEEVO_APP_ID
+        value: ac5673cc-9d40-4483-85b6-232b109d027e
+      - key: MEEVO_APP_SECRET
+        value: 2c835721-4710-4034-8811-7301f8fed2b6
+      - key: MEEVO_AUTH_URL
+        value: https://d18devmarketplace.meevodev.com/oauth2/token
+      - key: MEEVO_BASE_URL
+        value: https://d18devpub.meevodev.com
+      - key: MEEVO_TENANT_ID
+        value: "4"
+      - key: MEEVO_LOCATION_ID
+        value: "3"
