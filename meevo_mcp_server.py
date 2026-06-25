@@ -236,23 +236,35 @@ if __name__ == "__main__":
 
     _PORT = int(os.environ.get("PORT", 8000))
 
-    # FastMCP auto-enables DNS-rebinding protection with allowed_hosts=["127.0.0.1:*", ...].
-    # Render's TLS proxy forwards requests with Host: meevo-mcp.onrender.com, which
-    # gets rejected with 421. Fix: wrap the ASGI app with middleware that rewrites
-    # the Host header to 127.0.0.1:443, matching the existing "127.0.0.1:*" pattern.
-    class _HostRewrite:
+    # The MCP SDK's TransportSecurityMiddleware enforces two checks on every POST:
+    #   1. Content-Type must start with "application/json"
+    #   2. Host must be in allowed_hosts (auto-set to 127.0.0.1:* when host=127.0.0.1)
+    # Render's TLS proxy changes Host to meevo-mcp.onrender.com → 421.
+    # Some Conduit follow-up POSTs lack Content-Type → 400.
+    # Fix: ASGI middleware that rewrites Host to 127.0.0.1:443 (matches 127.0.0.1:*)
+    # and injects Content-Type: application/json on POSTs that are missing it.
+    class _FixHeaders:
         def __init__(self, app):
             self.app = app
 
         async def __call__(self, scope, receive, send):
             if scope.get("type") in ("http", "websocket"):
-                headers = [
-                    (b"host", b"127.0.0.1:443") if k == b"host" else (k, v)
-                    for k, v in scope.get("headers", [])
-                ]
-                scope = {**scope, "headers": headers}
+                new_headers = []
+                has_ct = False
+                for k, v in scope.get("headers", []):
+                    kl = k.lower()
+                    if kl == b"host":
+                        new_headers.append((b"host", b"127.0.0.1:443"))
+                    elif kl == b"content-type":
+                        has_ct = True
+                        new_headers.append((k, v))
+                    else:
+                        new_headers.append((k, v))
+                if scope.get("method") == "POST" and not has_ct:
+                    new_headers.append((b"content-type", b"application/json"))
+                scope = {**scope, "headers": new_headers}
             await self.app(scope, receive, send)
 
     _inner = mcp.streamable_http_app()
-    _app = _HostRewrite(_inner)
+    _app = _FixHeaders(_inner)
     uvicorn.run(_app, host="0.0.0.0", port=_PORT)
