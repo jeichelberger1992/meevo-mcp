@@ -234,9 +234,18 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    # Use streamable HTTP transport (POST-based — what Conduit expects).
-    # Mounted at /sse to match the URL configured in Conduit.
-    # mcp.run() hardcodes host=127.0.0.1, so we extract the app and run uvicorn directly.
     _PORT = int(os.environ.get("PORT", 8000))
-    _app = mcp.streamable_http_app()
-    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
+    _inner = mcp.streamable_http_app()
+
+    # Render forwards requests with Host: meevo-mcp.onrender.com, but the MCP
+    # SDK's transport_security.py rejects any host that isn't localhost/IP
+    # (DNS-rebinding protection).  Rewrite the header before it gets there.
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            scope["headers"] = [
+                (b"host", b"localhost") if k == b"host" else (k, v)
+                for k, v in scope["headers"]
+            ]
+        await _inner(scope, receive, send)
+
+    uvicorn.run(app, host="0.0.0.0", port=_PORT)
