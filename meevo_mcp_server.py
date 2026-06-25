@@ -25,6 +25,7 @@ AUTH_URL     = os.environ.get("MEEVO_AUTH_URL",     "https://d18devmarketplace.m
 BASE_URL     = os.environ.get("MEEVO_BASE_URL",     "https://d18devpub.meevodev.com")
 TENANT_ID    = os.environ.get("MEEVO_TENANT_ID",    "4")
 LOCATION_ID  = os.environ.get("MEEVO_LOCATION_ID",  "3")
+SERVER_PORT  = int(os.environ.get("PORT", "8000"))
 
 # ─── Auth token cache ──────────────────────────────────────────────────────────
 _token: str | None = None
@@ -233,9 +234,9 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    # Use streamable HTTP transport (POST-based - what Conduit expects).
-  # Mounted at /sse to match the URL configured in Conduit.
-  # mcp.run() hardcodes host=127.0.0.1, so run uvicorn directly.
-  _PORT = int(os.environ.get("PORT", 8000))
-_app = mcp.streamable_http_app()
-uvicorn.run(_app, host="0.0.0.0", port=_PORT)
+    # Use streamable HTTP transport (POST-based — what Conduit expects).
+    # Mounted at /sse to match the URL configured in Conduit.
+    # mcp.run() hardcodes host=127.0.0.1, so we extract the app and run uvicorn directly.
+    _PORT = int(os.environ.get("PORT", 8000))
+    _app = mcp.streamable_http_app()
+    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
