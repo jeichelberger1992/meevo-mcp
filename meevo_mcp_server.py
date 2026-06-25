@@ -232,29 +232,62 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
     import uvicorn
 
     _PORT = int(os.environ.get("PORT", 8000))
 
-    # The MCP SDK's TransportSecurityMiddleware enforces two checks on every POST:
-    #   1. Content-Type must start with "application/json"
-    #   2. Host must be in allowed_hosts (auto-set to 127.0.0.1:* when host=127.0.0.1)
+    # The MCP SDK's TransportSecurityMiddleware validates Host + Content-Type on POSTs.
     # Render's TLS proxy sends Host: meevo-mcp.onrender.com → rejected (421).
-    # Conduit follow-up POSTs may send wrong/missing Content-Type → rejected (400).
-    # Fix: always force Host=127.0.0.1:443 and Content-Type=application/json on POSTs.
+    # Conduit follow-up POSTs may have wrong/missing Content-Type → rejected (400).
+    # This middleware also buffers the body for debug logging to diagnose any
+    # remaining 400 errors from the MCP handler itself (e.g. bad JSON body).
     class _FixHeaders:
         def __init__(self, app):
             self.app = app
 
         async def __call__(self, scope, receive, send):
-            if scope.get("type") in ("http", "websocket"):
-                # Lowercase all keys, deduplicate, then override critical headers
-                hdrs = {k.lower(): v for k, v in scope.get("headers", [])}
-                hdrs[b"host"] = b"127.0.0.1:443"
-                if scope.get("method") == "POST":
-                    hdrs[b"content-type"] = b"application/json"
+            if scope.get("type") not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+
+            # Lowercase keys, deduplicate, override critical headers
+            hdrs = {k.lower(): v for k, v in scope.get("headers", [])}
+            hdrs[b"host"] = b"127.0.0.1:443"
+
+            if scope.get("method") == "POST":
+                hdrs[b"content-type"] = b"application/json"
+
+                # Buffer the full body so we can inspect it and re-deliver it
+                chunks = []
+                more_body = True
+                while more_body:
+                    event = await receive()
+                    if event.get("type") == "http.request":
+                        chunks.append(event.get("body", b""))
+                        more_body = event.get("more_body", False)
+                    else:
+                        break
+                body = b"".join(chunks)
+
+                # Debug: log body so we can diagnose 400 errors
+                print(f"[MCPFIX] POST body({len(body)}): {body[:400]}", file=sys.stderr, flush=True)
+                print(f"[MCPFIX] POST hdrs: { {k.decode():v.decode() for k,v in hdrs.items()} }", file=sys.stderr, flush=True)
+
+                # Reconstruct a receive callable that replays the buffered body
+                delivered = False
+                async def buffered_receive():
+                    nonlocal delivered
+                    if not delivered:
+                        delivered = True
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    return {"type": "http.disconnect"}
+
                 scope = {**scope, "headers": list(hdrs.items())}
-            await self.app(scope, receive, send)
+                await self.app(scope, buffered_receive, send)
+            else:
+                scope = {**scope, "headers": list(hdrs.items())}
+                await self.app(scope, receive, send)
 
     _inner = mcp.streamable_http_app()
     _app = _FixHeaders(_inner)
