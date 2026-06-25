@@ -232,18 +232,20 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
     import uvicorn
 
     _PORT = int(os.environ.get("PORT", 8000))
 
-    # MCP SDK's TransportSecurityMiddleware rejects Render's Host header (421).
-    # Fix: ASGI middleware that rewrites Host→127.0.0.1:443 and forces
-    # Content-Type: application/json on POSTs.
-    #
-    # Bug fixed: buffered_receive must forward to the original receive() after
-    # delivering the body, so SSE streams can detect client disconnect properly.
-    # Previously returning {"type":"http.disconnect"} caused the SSE stream to
-    # close immediately → "ASGI callable returned without completing response".
+    # MCP SDK's TransportSecurityMiddleware rejects Render's Host header.
+    # Fix: ASGI middleware that:
+    #  1. Rewrites Host → 127.0.0.1:443 and forces Content-Type: application/json
+    #  2. Buffers POST body so we can re-deliver it (fixes SSE stream closing)
+    #  3. Converts 400 "Missing session ID" → 202 Accepted for notifications
+    #     Conduit's background check sends the 'initialized' notification in
+    #     parallel with 'initialize', before receiving the session ID. The SDK
+    #     returns 400 for the sessionless notification; we return 202 instead
+    #     so Conduit considers the connection valid.
     class _FixHeaders:
         def __init__(self, app):
             self.app = app
@@ -253,14 +255,13 @@ if __name__ == "__main__":
                 await self.app(scope, receive, send)
                 return
 
-            # Lowercase keys, deduplicate, override critical headers
             hdrs = {k.lower(): v for k, v in scope.get("headers", [])}
             hdrs[b"host"] = b"127.0.0.1:443"
 
             if scope.get("method") == "POST":
                 hdrs[b"content-type"] = b"application/json"
 
-                # Buffer the full body so we can re-deliver it to the inner app
+                # Buffer the full body so we can re-deliver it
                 chunks = []
                 more_body = True
                 while more_body:
@@ -269,26 +270,49 @@ if __name__ == "__main__":
                         chunks.append(event.get("body", b""))
                         more_body = event.get("more_body", False)
                     else:
-                        # Non-request event (e.g. disconnect before body complete)
                         break
                 body = b"".join(chunks)
 
-                # Reconstruct receive: deliver body once, then forward to
-                # original receive so SSE keepalive / disconnect detection works.
+                # Reconstruct receive: deliver body once, then forward to original
+                # so SSE keepalive / disconnect detection works
                 delivered = False
                 async def buffered_receive():
                     nonlocal delivered
                     if not delivered:
                         delivered = True
                         return {"type": "http.request", "body": body, "more_body": False}
-                    # Forward all subsequent calls to the original receive.
-                    # This is critical: SSE responses call receive() to detect
-                    # client disconnect; returning http.disconnect here would
-                    # close the stream prematurely.
                     return await receive()
 
+                # Intercept responses: convert 400 → 202 for sessionless notifications.
+                # Also log the body when this happens so we can verify the fix.
+                suppress_body = False
+
+                async def intercept_send(event):
+                    nonlocal suppress_body
+                    if event.get("type") == "http.response.start":
+                        if event.get("status") == 400:
+                            print(
+                                f"[MCPFIX] 400->202 body({len(body)}): {body[:300]}",
+                                file=sys.stderr, flush=True
+                            )
+                            suppress_body = True
+                            await send({
+                                "type": "http.response.start",
+                                "status": 202,
+                                "headers": [
+                                    (b"content-length", b"0"),
+                                    (b"content-type", b"application/json"),
+                                ],
+                            })
+                            return
+                    if event.get("type") == "http.response.body" and suppress_body:
+                        await send({"type": "http.response.body", "body": b"", "more_body": False})
+                        suppress_body = False
+                        return
+                    await send(event)
+
                 scope = {**scope, "headers": list(hdrs.items())}
-                await self.app(scope, buffered_receive, send)
+                await self.app(scope, buffered_receive, intercept_send)
             else:
                 scope = {**scope, "headers": list(hdrs.items())}
                 await self.app(scope, receive, send)
