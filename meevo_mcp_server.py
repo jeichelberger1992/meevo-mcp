@@ -233,19 +233,14 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
+    from mcp.server.transport_security import TransportSecuritySettings
 
     _PORT = int(os.environ.get("PORT", 8000))
-    _inner = mcp.streamable_http_app()
 
-    # Render forwards requests with Host: meevo-mcp.onrender.com, but the MCP
-    # SDK's transport_security.py rejects any host that isn't localhost/IP
-    # (DNS-rebinding protection).  Rewrite the header before it gets there.
-    async def app(scope, receive, send):
-        if scope["type"] == "http":
-            scope["headers"] = [
-                (b"host", b"localhost") if k == b"host" else (k, v)
-                for k, v in scope["headers"]
-            ]
-        await _inner(scope, receive, send)
-
-    uvicorn.run(app, host="0.0.0.0", port=_PORT)
+    # Render terminates TLS and forwards requests with Host: meevo-mcp.onrender.com.
+    # The MCP SDK's DNS-rebinding protection rejects any host not in allowed_hosts
+    # (which defaults to an empty list).  Disable it — we're already behind
+    # Render's secure edge, so the attack surface this protects against is absent.
+    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    _app = mcp.streamable_http_app(security_settings=_security)
+    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
