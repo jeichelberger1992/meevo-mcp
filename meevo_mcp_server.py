@@ -234,8 +234,8 @@ if __name__ == "__main__":
     import uvicorn
 
     # Use streamable HTTP transport (POST-based - what Conduit expects).
-      # Mounted at /sse to match the URL configured in Conduit.
-      # mcp.run() hardcodes host=127.0.0.1, so run uvicorn directly.
-      _PORT = int(os.environ.get("PORT", 8000))
-    _app = mcp.streamable_http_app()
-    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
+  # Mounted at /sse to match the URL configured in Conduit.
+  # mcp.run() hardcodes host=127.0.0.1, so run uvicorn directly.
+  _PORT = int(os.environ.get("PORT", 8000))
+_app = mcp.streamable_http_app()
+uvicorn.run(_app, host="0.0.0.0", port=_PORT)
