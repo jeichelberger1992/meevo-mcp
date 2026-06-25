@@ -239,30 +239,21 @@ if __name__ == "__main__":
     # The MCP SDK's TransportSecurityMiddleware enforces two checks on every POST:
     #   1. Content-Type must start with "application/json"
     #   2. Host must be in allowed_hosts (auto-set to 127.0.0.1:* when host=127.0.0.1)
-    # Render's TLS proxy changes Host to meevo-mcp.onrender.com → 421.
-    # Some Conduit follow-up POSTs lack Content-Type → 400.
-    # Fix: ASGI middleware that rewrites Host to 127.0.0.1:443 (matches 127.0.0.1:*)
-    # and injects Content-Type: application/json on POSTs that are missing it.
+    # Render's TLS proxy sends Host: meevo-mcp.onrender.com → rejected (421).
+    # Conduit follow-up POSTs may send wrong/missing Content-Type → rejected (400).
+    # Fix: always force Host=127.0.0.1:443 and Content-Type=application/json on POSTs.
     class _FixHeaders:
         def __init__(self, app):
             self.app = app
 
         async def __call__(self, scope, receive, send):
             if scope.get("type") in ("http", "websocket"):
-                new_headers = []
-                has_ct = False
-                for k, v in scope.get("headers", []):
-                    kl = k.lower()
-                    if kl == b"host":
-                        new_headers.append((b"host", b"127.0.0.1:443"))
-                    elif kl == b"content-type":
-                        has_ct = True
-                        new_headers.append((k, v))
-                    else:
-                        new_headers.append((k, v))
-                if scope.get("method") == "POST" and not has_ct:
-                    new_headers.append((b"content-type", b"application/json"))
-                scope = {**scope, "headers": new_headers}
+                # Lowercase all keys, deduplicate, then override critical headers
+                hdrs = {k.lower(): v for k, v in scope.get("headers", [])}
+                hdrs[b"host"] = b"127.0.0.1:443"
+                if scope.get("method") == "POST":
+                    hdrs[b"content-type"] = b"application/json"
+                scope = {**scope, "headers": list(hdrs.items())}
             await self.app(scope, receive, send)
 
     _inner = mcp.streamable_http_app()
