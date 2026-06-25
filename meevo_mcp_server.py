@@ -231,5 +231,10 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Run as SSE server (what Conduit's MCP connection expects)
-    mcp.run(transport="sse")
+    import uvicorn
+    # FastMCP wraps an internal MCPServer at mcp._mcp_server which exposes sse_app().
+    # We call it directly so we can bind to 0.0.0.0 and use Render's PORT env var.
+    # (mcp.run(transport="sse") hardcodes 127.0.0.1:8000 which Render can't reach.)
+    _PORT = int(os.environ.get("PORT", 8000))
+    _app = mcp._mcp_server.sse_app(host="0.0.0.0")
+    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
