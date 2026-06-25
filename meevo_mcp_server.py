@@ -241,15 +241,15 @@ if __name__ == "__main__":
     # The MCP SDK's DNS-rebinding protection rejects any host not in allowed_hosts
     # (which defaults to an empty list).  Disable it — we're already behind
     # Render's secure edge, so the attack surface this protects against is absent.
-    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    # Try transport_security= (current SDK parameter name).
-    # Fall back to host="0.0.0.0": the lowlevel SDK only enables DNS-rebinding
-    # protection when host is 127.0.0.1/localhost, so 0.0.0.0 bypasses it.
+    # Render terminates TLS and proxies with Host: meevo-mcp.onrender.com.
+    # Explicitly allowlist our hostname so the MCP SDK's DNS-rebinding protection
+    # lets the request through (enable_dns_rebinding_protection=True, host in allowed_hosts).
+    _security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["meevo-mcp.onrender.com"],
+    )
     try:
         _app = mcp.streamable_http_app(transport_security=_security)
     except TypeError:
-        try:
-            _app = mcp.streamable_http_app(host="0.0.0.0")
-        except TypeError:
-            _app = mcp.streamable_http_app()
+        _app = mcp.streamable_http_app(host="0.0.0.0")
     uvicorn.run(_app, host="0.0.0.0", port=_PORT)
