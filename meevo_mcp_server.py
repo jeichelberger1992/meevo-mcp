@@ -242,5 +242,14 @@ if __name__ == "__main__":
     # (which defaults to an empty list).  Disable it — we're already behind
     # Render's secure edge, so the attack surface this protects against is absent.
     _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    _app = mcp.streamable_http_app(security_settings=_security)
+    # Try transport_security= (current SDK parameter name).
+    # Fall back to host="0.0.0.0": the lowlevel SDK only enables DNS-rebinding
+    # protection when host is 127.0.0.1/localhost, so 0.0.0.0 bypasses it.
+    try:
+        _app = mcp.streamable_http_app(transport_security=_security)
+    except TypeError:
+        try:
+            _app = mcp.streamable_http_app(host="0.0.0.0")
+        except TypeError:
+            _app = mcp.streamable_http_app()
     uvicorn.run(_app, host="0.0.0.0", port=_PORT)
