@@ -10,7 +10,9 @@ import os
 import time
 import requests
 from datetime import date, timedelta
-from mcp.server.fastmcp import FastMCP	APP_ID       = os.environ.get("MEEVO_APP_ID",       "ac5673cc-9d40-4483-85b6-232b109d027e")
+from mcp.server.fastmcp import FastMCP
+
+APP_ID       = os.environ.get("MEEVO_APP_ID",       "ac5673cc-9d40-4483-85b6-232b109d027e")
 APP_SECRET   = os.environ.get("MEEVO_APP_SECRET",   "2c835721-4710-4034-8811-7301f8fed2b6")
 AUTH_URL     = os.environ.get("MEEVO_AUTH_URL",     "https://d18devmarketplace.meevodev.com/oauth2/token")
 BASE_URL     = os.environ.get("MEEVO_BASE_URL",     "https://d18devpub.meevodev.com")
@@ -25,7 +27,7 @@ def get_token():
     global _token, _token_expiry
     if _token and time.time() < _token_expiry:
         return _token
-    r = requests.post(AUT_URL, data={"client_id": APP_ID, "client_secret": APP_SECRET, "grant_type": "client_credentials"}, headers={"Accept": "application/json"}, timeout=10)
+    r = requests.post(AUTH_URL, data={"client_id": APP_ID, "client_secret": APP_SECRET, "grant_type": "client_credentials"}, headers={"Accept": "application/json"}, timeout=10)
     r.raise_for_status()
     d = r.json()
     _token = d["access_token"]
@@ -133,7 +135,7 @@ def check_availability(service_id: str, check_date: str = "", employee_id: str =
     d = check_date or date.today().isoformat()
     params = {"ServiceId": service_id, "Date": d}
     if employee_id:
-        params["EmployeeId": employee_id
+        params["EmployeeId"] = employee_id
     data = meevo_get("/publicapi/v1/appointments/availabletimes", params)
     slots = data.get("AvailableTimes") or data.get("Times") or _items(data)
     return {"service_id": service_id, "date": d, "available_times": slots[:20], "total_slots": len(slots)}
@@ -141,7 +143,7 @@ def check_availability(service_id: str, check_date: str = "", employee_id: str =
 
 @mcp.tool()
 def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", notes: str = "") -> dict:
-    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH.MM:SS. Always call check_availability first."""
+    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS. Always call check_availability first."""
     service_entry = {"ServiceId": service_id, "StartDateTime": start_datetime}
     if employee_id:
         service_entry["EmployeeId"] = employee_id
@@ -150,7 +152,7 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         body["Notes"] = notes
     try:
         result = meevo_post("/publicapi/v1/appointments", body)
-        appt_id = result.get("AppointmentId") or result.get("Id") or [(result.get("Appointments") or [{}])[0].get("AppointmentId")]
+        appt_id = result.get("AppointmentId") or result.get("Id") or ((result.get("Appointments") or [{}])[0].get("AppointmentId"))
         return {"success": True, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
@@ -195,7 +197,7 @@ def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
     data = meevo_get("/publicapi/v1/employees", {"PageNumber": page, "ItemsPerPage": 50})
     staff = _items(data)
-    return {"staff": [{"id": e.get("EmployeeId":) or [e.get("Id"), "name": f"{e.get('FirstName', '')} {e.get('LastName', '')}".strip(), "title": e.get("Title") or e.get("JobTitle", ""), "is_active": e.get("IsActive", True)} for e in staff], "total": data.get("TotalItems") or data.get("TotalCount") or len(staff), "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
+    return {"staff": [{"id": e.get("EmployeeId") or e.get("Id"), "name": f"{e.get('FirstName', '')} {e.get('LastName', '')}".strip(), "title": e.get("Title") or e.get("JobTitle", ""), "is_active": e.get("IsActive", True)} for e in staff], "total": data.get("TotalItems") or data.get("TotalCount") or len(staff), "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
 
 
 if __name__ == "__main__":
