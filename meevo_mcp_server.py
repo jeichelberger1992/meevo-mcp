@@ -2,7 +2,8 @@
 Meevo MCP Server
 ================
 Exposes Meevo API endpoints as MCP tools so Conduit's AI agent
-can look up clients, appointments, and services in real-time.
+can look up clients, appointments, and services in real-time,
+and book, reschedule, or cancel appointments.
 
 Deploy this to Render.com (see render.yaml), then paste the
 resulting URL into Conduit > Settings > Connections > Add MCP Server.
@@ -25,7 +26,6 @@ AUTH_URL     = os.environ.get("MEEVO_AUTH_URL",     "https://d18devmarketplace.m
 BASE_URL     = os.environ.get("MEEVO_BASE_URL",     "https://d18devpub.meevodev.com")
 TENANT_ID    = os.environ.get("MEEVO_TENANT_ID",    "4")
 LOCATION_ID  = os.environ.get("MEEVO_LOCATION_ID",  "3")
-SERVER_PORT  = int(os.environ.get("PORT", "8000"))
 
 # ─── Auth token cache ──────────────────────────────────────────────────────────
 _token: str | None = None
@@ -49,6 +49,14 @@ def get_token() -> str:
     return _token
 
 
+def _auth_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {get_token()}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+
 def meevo_get(path: str, params: dict | None = None) -> dict:
     base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
     if params:
@@ -56,11 +64,55 @@ def meevo_get(path: str, params: dict | None = None) -> dict:
     r = requests.get(
         f"{BASE_URL}{path}",
         params=base,
-        headers={"Authorization": f"Bearer {get_token()}", "Accept": "application/json"},
+        headers=_auth_headers(),
         timeout=15,
     )
     r.raise_for_status()
     return r.json()
+
+
+def meevo_post(path: str, body: dict, params: dict | None = None) -> dict:
+    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
+    if params:
+        base.update(params)
+    r = requests.post(
+        f"{BASE_URL}{path}",
+        params=base,
+        json=body,
+        headers=_auth_headers(),
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json() if r.content else {"success": True}
+
+
+def meevo_put(path: str, body: dict, params: dict | None = None) -> dict:
+    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
+    if params:
+        base.update(params)
+    r = requests.put(
+        f"{BASE_URL}{path}",
+        params=base,
+        json=body,
+        headers=_auth_headers(),
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json() if r.content else {"success": True}
+
+
+def meevo_delete(path: str, params: dict | None = None) -> dict:
+    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
+    if params:
+        base.update(params)
+    r = requests.delete(
+        f"{BASE_URL}{path}",
+        params=base,
+        headers=_auth_headers(),
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json() if r.content else {"success": True}
 
 
 def _items(data: dict) -> list:
@@ -72,7 +124,7 @@ def _items(data: dict) -> list:
 
 
 # ─── MCP server ───────────────────────────────────────────────────────────────
-mcp = FastMCP("Meevo", streamable_http_path="/sse")
+mcp = FastMCP("Meevo")
 
 
 @mcp.tool()
@@ -131,6 +183,7 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
     for a in appts:
         dt = a.get("StartDateTime") or a.get("Date", "")
         entry = {
+            "appointment_id": a.get("AppointmentId") or a.get("Id"),
             "date": dt,
             "service": a.get("ServiceName") or a.get("Service", ""),
             "staff": a.get("EmployeeName") or a.get("Employee", ""),
@@ -151,17 +204,18 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
 
 
 @mcp.tool()
-def check_availability(service_id: str, check_date: str = "") -> dict:
+def check_availability(service_id: str, check_date: str = "", employee_id: str = "") -> dict:
     """
     Check available appointment times for a service on a given date.
     check_date format: YYYY-MM-DD (defaults to today if not provided).
-    Use list_services to get service IDs.
+    employee_id is optional — omit to see all available staff slots.
+    Use list_services to get service IDs and list_staff to get employee IDs.
     """
     d = check_date or date.today().isoformat()
-    data = meevo_get("/publicapi/v1/appointments/availabletimes", {
-        "ServiceId": service_id,
-        "Date": d,
-    })
+    params: dict = {"ServiceId": service_id, "Date": d}
+    if employee_id:
+        params["EmployeeId"] = employee_id
+    data = meevo_get("/publicapi/v1/appointments/availabletimes", params)
     slots = data.get("AvailableTimes") or data.get("Times") or _items(data)
     return {
         "service_id": service_id,
@@ -169,6 +223,130 @@ def check_availability(service_id: str, check_date: str = "") -> dict:
         "available_times": slots[:20],
         "total_slots": len(slots),
     }
+
+
+@mcp.tool()
+def book_appointment(
+    client_id: str,
+    service_id: str,
+    start_datetime: str,
+    employee_id: str = "",
+    notes: str = "",
+) -> dict:
+    """
+    Book a new appointment for a client in Meevo.
+
+    Args:
+        client_id: The Meevo client ID (use lookup_client to find it).
+        service_id: The service to book (use list_services to find it).
+        start_datetime: When the appointment starts — format: YYYY-MM-DDTHH:MM:SS
+                        e.g. "2026-07-01T10:00:00"
+        employee_id: (optional) Specific staff member ID. Leave blank for no preference.
+        notes: (optional) Any booking notes to attach.
+
+    Always call check_availability first to confirm the slot is open before booking.
+    """
+    service_entry: dict = {"ServiceId": service_id, "StartDateTime": start_datetime}
+    if employee_id:
+        service_entry["EmployeeId"] = employee_id
+
+    body: dict = {
+        "ClientId": client_id,
+        "Services": [service_entry],
+    }
+    if notes:
+        body["Notes"] = notes
+
+    try:
+        result = meevo_post("/publicapi/v1/appointments", body)
+        appt_id = (
+            result.get("AppointmentId")
+            or result.get("Id")
+            or ((result.get("Appointments") or [{}])[0].get("AppointmentId"))
+        )
+        return {
+            "success": True,
+            "appointment_id": appt_id,
+            "client_id": client_id,
+            "service_id": service_id,
+            "start_datetime": start_datetime,
+            "employee_id": employee_id or "no preference",
+            "raw": result,
+        }
+    except requests.HTTPError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "response_body": e.response.text if e.response is not None else "",
+        }
+
+
+@mcp.tool()
+def reschedule_appointment(
+    appointment_id: str,
+    new_start_datetime: str,
+    employee_id: str = "",
+) -> dict:
+    """
+    Reschedule an existing Meevo appointment to a new date/time.
+
+    Args:
+        appointment_id: The appointment ID to move (from get_client_appointments).
+        new_start_datetime: New start time — format: YYYY-MM-DDTHH:MM:SS
+                            e.g. "2026-07-05T14:00:00"
+        employee_id: (optional) Also reassign to a different staff member.
+
+    Always call check_availability first to confirm the new slot is open.
+    """
+    body: dict = {"StartDateTime": new_start_datetime}
+    if employee_id:
+        body["EmployeeId"] = employee_id
+
+    try:
+        result = meevo_put(f"/publicapi/v1/appointments/{appointment_id}", body)
+        return {
+            "success": True,
+            "appointment_id": appointment_id,
+            "new_start_datetime": new_start_datetime,
+            "raw": result,
+        }
+    except requests.HTTPError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "response_body": e.response.text if e.response is not None else "",
+        }
+
+
+@mcp.tool()
+def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> dict:
+    """
+    Cancel an existing Meevo appointment.
+
+    Args:
+        appointment_id: The appointment ID to cancel (from get_client_appointments).
+        cancellation_reason: (optional) Reason for cancellation.
+
+    Always confirm with the client before cancelling — this cannot be undone via API.
+    """
+    params: dict = {}
+    if cancellation_reason:
+        params["CancellationReason"] = cancellation_reason
+
+    try:
+        result = meevo_delete(f"/publicapi/v1/appointments/{appointment_id}", params or None)
+        return {
+            "success": True,
+            "appointment_id": appointment_id,
+            "cancelled": True,
+            "raw": result,
+        }
+    except requests.HTTPError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "response_body": e.response.text if e.response is not None else "",
+        }
 
 
 @mcp.tool()
@@ -232,92 +410,5 @@ def get_recent_changes(hours_back: int = 24) -> dict:
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys
-    import json as _json
-    import uvicorn
-
-    _PORT = int(os.environ.get("PORT", 8000))
-
-    # MCP SDK's TransportSecurityMiddleware rejects Render's Host header.
-    # Additionally, Conduit's background check sends tools/list in parallel
-    # with initialize, before receiving the session ID from the initialize
-    # response. This middleware:
-    #   1. Rewrites Host → 127.0.0.1:443 + forces Content-Type: application/json
-    #   2. Buffers POST body and properly forwards original receive() after delivery
-    #   3. Captures mcp-session-id from responses and injects it into follow-up
-    #      requests that lack a session ID (routing them to the correct session)
-    class _FixHeaders:
-        def __init__(self, app):
-            self.app = app
-            self._last_session_id = None  # session ID from most recent initialize
-
-        async def __call__(self, scope, receive, send):
-            if scope.get("type") not in ("http", "websocket"):
-                await self.app(scope, receive, send)
-                return
-
-            hdrs = {k.lower(): v for k, v in scope.get("headers", [])}
-            hdrs[b"host"] = b"127.0.0.1:443"
-
-            if scope.get("method") == "POST":
-                hdrs[b"content-type"] = b"application/json"
-
-                # Buffer the full body so we can inspect it and re-deliver it
-                chunks = []
-                more_body = True
-                while more_body:
-                    event = await receive()
-                    if event.get("type") == "http.request":
-                        chunks.append(event.get("body", b""))
-                        more_body = event.get("more_body", False)
-                    else:
-                        break
-                body = b"".join(chunks)
-
-                # If this POST has no session ID, inject the last captured one
-                # for non-initialize requests. Conduit sends tools/list before
-                # reading the initialize response, so it can't include the
-                # session ID. Injecting it routes the request to the correct
-                # session instead of creating a new transport that fails.
-                if b"mcp-session-id" not in hdrs and self._last_session_id:
-                    try:
-                        method = _json.loads(body).get("method", "")
-                    except Exception:
-                        method = ""
-                    if method and method != "initialize":
-                        sid = self._last_session_id.encode()
-                        hdrs[b"mcp-session-id"] = sid
-                        print(
-                            f"[MCPFIX] Injected session for {method}",
-                            file=sys.stderr, flush=True
-                        )
-
-                # Reconstruct receive: deliver body once, then forward to
-                # original so SSE keepalive / disconnect detection works
-                delivered = False
-                async def buffered_receive():
-                    nonlocal delivered
-                    if not delivered:
-                        delivered = True
-                        return {"type": "http.request", "body": body, "more_body": False}
-                    return await receive()
-
-                # Intercept responses to capture the session ID
-                _self = self
-                async def intercept_send(event):
-                    if event.get("type") == "http.response.start":
-                        resp_hdrs = dict(event.get("headers", []))
-                        sid = resp_hdrs.get(b"mcp-session-id")
-                        if sid:
-                            _self._last_session_id = sid.decode()
-                    await send(event)
-
-                scope = {**scope, "headers": list(hdrs.items())}
-                await self.app(scope, buffered_receive, intercept_send)
-            else:
-                scope = {**scope, "headers": list(hdrs.items())}
-                await self.app(scope, receive, send)
-
-    _inner = mcp.streamable_http_app()
-    _app = _FixHeaders(_inner)
-    uvicorn.run(_app, host="0.0.0.0", port=_PORT)
+    # Run as SSE server (what Conduit's MCP connection expects)
+    mcp.run(transport="sse")
