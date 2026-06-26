@@ -4,6 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python meevo_mcp_server.py
+    healthCheckPath: /sse
     envVars:
       - key: MEEVO_APP_ID
         value: ac5673cc-9d40-4483-85b6-232b109d027e
