@@ -200,5 +200,7 @@ def list_staff(page: int = 1) -> dict:
     return {"staff": [{"id": e.get("EmployeeId") or e.get("Id"), "name": f"{e.get('FirstName', '')} {e.get('LastName', '')}".strip(), "title": e.get("Title") or e.get("JobTitle", ""), "is_active": e.get("IsActive", True)} for e in staff], "total": data.get("TotalItems") or data.get("TotalCount") or len(staff), "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
 
 
+
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
