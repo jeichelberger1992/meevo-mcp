@@ -208,7 +208,7 @@ def check_availability(service_id: str, check_date: str = "", employee_id: str =
     """
     Check available appointment times for a service on a given date.
     check_date format: YYYY-MM-DD (defaults to today if not provided).
-    employee_id is optional — omit to see all available staff slots.
+    employee_id is optional -- omit to see all available staff slots.
     Use list_services to get service IDs and list_staff to get employee IDs.
     """
     d = check_date or date.today().isoformat()
@@ -239,7 +239,7 @@ def book_appointment(
     Args:
         client_id: The Meevo client ID (use lookup_client to find it).
         service_id: The service to book (use list_services to find it).
-        start_datetime: When the appointment starts — format: YYYY-MM-DDTHH:MM:SS
+        start_datetime: When the appointment starts -- format: YYYY-MM-DDTHH:MM:SS
                         e.g. "2026-07-01T10:00:00"
         employee_id: (optional) Specific staff member ID. Leave blank for no preference.
         notes: (optional) Any booking notes to attach.
@@ -292,7 +292,7 @@ def reschedule_appointment(
 
     Args:
         appointment_id: The appointment ID to move (from get_client_appointments).
-        new_start_datetime: New start time — format: YYYY-MM-DDTHH:MM:SS
+        new_start_datetime: New start time -- format: YYYY-MM-DDTHH:MM:SS
                             e.g. "2026-07-05T14:00:00"
         employee_id: (optional) Also reassign to a different staff member.
 
@@ -327,7 +327,7 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
         appointment_id: The appointment ID to cancel (from get_client_appointments).
         cancellation_reason: (optional) Reason for cancellation.
 
-    Always confirm with the client before cancelling — this cannot be undone via API.
+    Always confirm with the client before cancelling -- this cannot be undone via API.
     """
     params: dict = {}
     if cancellation_reason:
@@ -394,18 +394,6 @@ def list_staff(page: int = 1) -> dict:
         ],
         "total": data.get("TotalItems") or data.get("TotalCount") or len(staff),
     }
-
-
-@mcp.tool()
-def get_recent_changes(hours_back: int = 24) -> dict:
-    """
-    Get all data changes in Meevo from the last N hours.
-    Useful for syncing updates — returns changed clients, appointments, etc.
-    Default is last 24 hours.
-    """
-    since_ts = int(time.time()) - (hours_back * 3600)
-    data = meevo_get("/publicapi/v1/changes", {"LastChangeTimestamp": since_ts})
-    return data
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
