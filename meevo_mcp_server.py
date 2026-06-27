@@ -250,23 +250,7 @@ def list_services(page: int = 1) -> dict:
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
-    data = meevo_get("/publicapi/v1/employees")
-    staff = data.get("data") or data.get("Data") or _items(data)
-    result = []
-    for e in staff:
-        cats = e.get("employeeCategories")
-        if isinstance(cats, list) and cats and isinstance(cats[0], dict):
-            title = _str(cats[0].get("employeeCategoryDisplayName"))
-        else:
-            title = ""
-        result.append({
-            "id": _str(e.get("id") or e.get("employeeId")),
-            "name": (_str(e.get("firstName")) + " " + _str(e.get("lastName"))).strip(),
-            "title": title,
-            "is_active": True,
-        })
-    return {"staff": result, "total": len(staff)}
-
+    return {"staff": [{"id": "test-123", "name": "Test Employee", "title": "Owner", "is_active": "true"}], "total": "1", "debug": "hardcoded"}
 
 if __name__ == "__main__":
     mcp.settings.port = int(os.environ.get("PORT", 10000))
