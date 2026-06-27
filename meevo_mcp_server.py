@@ -121,17 +121,18 @@ def debug_api(path: str) -> dict:
 
 @mcp.tool()
 def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
-    """Search for Meevo clients by name, phone, or email. Fetches pages and filters locally."""
-    clean_phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+1", "")
+    """Search for Meevo clients by name, phone, or email. Fetches up to 50 pages and filters locally."""
+    import re as _re
+    clean_phone = _re.sub(r'\D', '', phone).lstrip('1')
     try:
         all_clients = []
-        for page_num in range(1, 11):
+        for page_num in range(1, 51):
             try:
                 data = meevo_get("/publicapi/v1/clients", {"pageNumber": page_num})
             except requests.HTTPError:
                 if page_num > 1:
-                    break  # no more pages, any error means stop
-                raise  # page 1 failing is a real error
+                    break
+                raise
             batch = _items(data)
             if not batch:
                 break
@@ -144,14 +145,14 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
             c_first = _str(_get(c, "firstName", "FirstName")).lower()
             c_email = _str(_get(c, "emailAddress", "email", "Email", "EmailAddress")).lower()
             c_phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
-            c_phone_nums = [_str(_get(p, "number", "Number", "phoneNumber", "PhoneNumber")) for p in c_phones]
+            c_phone_digits = [_re.sub(r'\D', '', _str(_get(p, "number", "Number", "phoneNumber", "PhoneNumber"))).lstrip('1') for p in c_phones]
             if last_name and last_name.lower() not in c_last:
                 continue
             if first_name and first_name.lower() not in c_first:
                 continue
             if email and email.lower() not in c_email:
                 continue
-            if clean_phone and not any(clean_phone in p for p in c_phone_nums):
+            if clean_phone and not any(clean_phone in p or p in clean_phone for p in c_phone_digits if p):
                 continue
             matches.append(c)
         if not matches:
