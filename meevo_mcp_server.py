@@ -129,9 +129,9 @@ def scan_debug(service_id: str) -> dict:
     results = {}
     for version in ("v2", "v1"):
         body = {
-            "ScanDateType": 0,
-            "StartDate": start,
-            "EndDate": end,
+            "ScanDateType": 2,
+            "StartDate": f"{start}T00:00:00",
+            "EndDate": f"{end}T23:59:59",
             "ScanTimeType": 0,
             "ScanServices": [{"ServiceId": service_id, "GenderPreferenceEnum": 0}],
         }
@@ -232,7 +232,7 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
     """Get upcoming and recent appointments for a Meevo client."""
     start = (date.today() - timedelta(days=days_back)).isoformat()
     end = (date.today() + timedelta(days=days_ahead)).isoformat()
-    data = meevo_get("/publicapi/v1/appointments", {"ClientId": client_id, "StartDate": start, "EndDate": end, "ItemsPerPage": 25})
+    data = meevo_get("/publicapi/v1/appointments", {"ClientId": client_id, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ItemsPerPage": 25})
     appts = _items(data)
     today = date.today().isoformat()
     upcoming, past = [], []
@@ -264,9 +264,9 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
         scan_service["EmployeeIds"] = [employee_id]
     for version in ("v2", "v1"):
         body = {
-            "ScanDateType": 0,
-            "StartDate": start,
-            "EndDate": end,
+            "ScanDateType": 2,
+            "StartDate": f"{start}T00:00:00",
+            "EndDate": f"{end}T23:59:59",
             "ScanTimeType": 0,
             "ScanServices": [scan_service],
         }
