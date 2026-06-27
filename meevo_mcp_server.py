@@ -121,36 +121,38 @@ def debug_api(path: str) -> dict:
 
 @mcp.tool()
 def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
-    """Search for Meevo clients by name, phone, or email using the filter endpoint."""
+    """Search for Meevo clients by name, phone, or email. Fetches pages and filters locally."""
     clean_phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+1", "")
-    body = {}
-    if last_name:
-        body["lastName"] = last_name
-    if first_name:
-        body["firstName"] = first_name
-    if clean_phone:
-        body["phoneNumber"] = clean_phone
-    if email:
-        body["emailAddress"] = email
     try:
-        last_error = None
-        data = None
-        for path in ["/publicapi/v1/clients/filter", "/publicapi/v1/clients/filtercriteria", "/publicapi/v1/clients"]:
-            try:
-                data = meevo_post(path, body)
+        all_clients = []
+        for page_num in range(1, 11):
+            data = meevo_get("/publicapi/v1/clients", {"pageNumber": page_num})
+            batch = _items(data)
+            if not batch:
                 break
-            except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    last_error = e
-                    continue
-                raise
-        if data is None:
-            raise last_error
-        clients = data.get("data") or data.get("Data") or _items(data)
-        if not clients:
-            return {"found": False, "raw_keys": list(data.keys()) if isinstance(data, dict) else str(data)[:300]}
+            all_clients.extend(batch)
+            if len(batch) < 20:
+                break
+        matches = []
+        for c in all_clients:
+            c_last = _str(_get(c, "lastName", "LastName")).lower()
+            c_first = _str(_get(c, "firstName", "FirstName")).lower()
+            c_email = _str(_get(c, "emailAddress", "email", "Email", "EmailAddress")).lower()
+            c_phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
+            c_phone_nums = [_str(_get(p, "number", "Number", "phoneNumber", "PhoneNumber")) for p in c_phones]
+            if last_name and last_name.lower() not in c_last:
+                continue
+            if first_name and first_name.lower() not in c_first:
+                continue
+            if email and email.lower() not in c_email:
+                continue
+            if clean_phone and not any(clean_phone in p for p in c_phone_nums):
+                continue
+            matches.append(c)
+        if not matches:
+            return {"found": False, "searched": len(all_clients), "message": f"No clients matching criteria in {len(all_clients)} records fetched."}
         results = []
-        for c in clients[:5]:
+        for c in matches[:5]:
             phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
             results.append({
                 "client_id": _get(c, "id", "clientId", "Id", "ClientId"),
@@ -158,7 +160,7 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
                 "email": _get(c, "emailAddress", "email", "Email", "EmailAddress"),
                 "phones": [_get(p, "number", "Number", "phoneNumber", "PhoneNumber") for p in phones],
             })
-        return {"found": True, "clients": results, "total": len(clients)}
+        return {"found": True, "clients": results, "total_matches": len(matches), "total_searched": len(all_clients)}
     except requests.HTTPError as e:
         return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
 
