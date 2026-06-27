@@ -84,7 +84,6 @@ def _items(data):
 
 
 def _get(obj, *keys, default=""):
-    """Try multiple key names and return the first match."""
     for k in keys:
         v = obj.get(k)
         if v is not None:
@@ -93,7 +92,6 @@ def _get(obj, *keys, default=""):
 
 
 def _str(v):
-    """Safely convert any value to a non-None string."""
     if v is None:
         return ""
     return str(v)
@@ -110,7 +108,7 @@ async def health_check(request):
 
 @mcp.tool()
 def debug_api(path: str) -> dict:
-    """Call any Meevo API path and return the raw response. Use for debugging. Example: /publicapi/v1/employees"""
+    """Call any Meevo API path and return the raw response."""
     try:
         data = meevo_get(path)
         sample = data
@@ -149,7 +147,7 @@ def lookup_client(phone: str = "", email: str = "") -> dict:
 
 @mcp.tool()
 def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int = 60) -> dict:
-    """Get upcoming and recent appointments for a Meevo client. Use lookup_client first to get the client_id."""
+    """Get upcoming and recent appointments for a Meevo client."""
     start = (date.today() - timedelta(days=days_back)).isoformat()
     end = (date.today() + timedelta(days=days_ahead)).isoformat()
     data = meevo_get("/publicapi/v1/appointments", {"ClientId": client_id, "StartDate": start, "EndDate": end, "ItemsPerPage": 25})
@@ -175,7 +173,7 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
 
 @mcp.tool()
 def check_availability(service_id: str, check_date: str = "", employee_id: str = "") -> dict:
-    """Check available appointment times for a service on a given date (YYYY-MM-DD). Use list_services for service IDs."""
+    """Check available appointment times for a service on a given date (YYYY-MM-DD)."""
     d = check_date or date.today().isoformat()
     params = {"ServiceId": service_id, "Date": d}
     if employee_id:
@@ -187,7 +185,7 @@ def check_availability(service_id: str, check_date: str = "", employee_id: str =
 
 @mcp.tool()
 def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", notes: str = "") -> dict:
-    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS. Always call check_availability first."""
+    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS."""
     service_entry = {"ServiceId": service_id, "StartDateTime": start_datetime}
     if employee_id:
         service_entry["EmployeeId"] = employee_id
@@ -205,7 +203,7 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
 
 @mcp.tool()
 def reschedule_appointment(appointment_id: str, new_start_datetime: str, employee_id: str = "") -> dict:
-    """Reschedule an existing appointment. new_start_datetime format: YYYY-MM-DDTHH:MM:SS. Always call check_availability first."""
+    """Reschedule an existing appointment. new_start_datetime format: YYYY-MM-DDTHH:MM:SS."""
     body = {"StartDateTime": new_start_datetime}
     if employee_id:
         body["EmployeeId"] = employee_id
@@ -218,7 +216,7 @@ def reschedule_appointment(appointment_id: str, new_start_datetime: str, employe
 
 @mcp.tool()
 def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> dict:
-    """Cancel an existing appointment. Always confirm with the client first -- cannot be undone via API."""
+    """Cancel an existing appointment. Always confirm with the client first."""
     params = {}
     if cancellation_reason:
         params["CancellationReason"] = cancellation_reason
@@ -234,28 +232,28 @@ def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
     all_services = []
     page_num = 1
-    while True:
+    while page_num <= 20:
         data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num, "itemsPerPage": 100})
         batch = data.get("data") or data.get("Data") or _items(data)
         if not batch:
             break
         all_services.extend(batch)
-        total = data.get("totalItems") or data.get("totalCount") or data.get("TotalItems") or 0
-        if len(all_services) >= int(total or 0) or len(batch) < 100:
+        page_size = int(data.get("itemsPerPage") or 20)
+        if len(batch) < page_size:
             break
         page_num += 1
-        if page_num > 10:
-            break
     result = []
     for s in all_services:
         result.append({
             "id": _str(s.get("id") or s.get("serviceId")),
-            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name")),
+            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
             "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
             "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
             "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
         })
-    return {"services": result, "total": _str(len(result))}
+    first_keys = list(all_services[0].keys()) if all_services else []
+    return {"services": result, "total": _str(len(result)), "_first_item_keys": first_keys, "_first_item": all_services[0] if all_services else {}}
+
 
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
@@ -276,6 +274,7 @@ def list_staff(page: int = 1) -> dict:
             "is_active": "true",
         })
     return {"staff": result, "total": _str(len(staff))}
+
 
 if __name__ == "__main__":
     mcp.settings.port = int(os.environ.get("PORT", 10000))
