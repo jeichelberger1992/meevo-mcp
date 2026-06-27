@@ -237,15 +237,14 @@ def list_services(page: int = 1) -> dict:
     result = []
     for s in services:
         result.append({
-            "id": _str(s.get("id") or s.get("serviceId") or s.get("ServiceId")),
-            "name": _str(s.get("name") or s.get("serviceName") or s.get("ServiceName")),
-            "category": _str(s.get("categoryName") or s.get("CategoryName") or s.get("category")),
-            "duration_minutes": _str(s.get("duration") or s.get("Duration") or s.get("durationMinutes")),
-            "price": _str(s.get("price") or s.get("Price") or s.get("retailPrice")),
+            "id": _str(s.get("id") or s.get("serviceId")),
+            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
+            "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
+            "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
+            "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
         })
-    total = len(services)
-    return {"services": result, "total": total, "page": page}
-
+    first_keys = list(services[0].keys()) if services else []
+    return {"services": result, "total": _str(len(services)), "page": _str(page), "_first_item_keys": first_keys}
 
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
