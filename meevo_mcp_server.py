@@ -151,26 +151,36 @@ async def health_check(request):
 
 @mcp.tool()
 def debug_ob_session() -> dict:
-    """Debug the OB API session call — returns OB URL, request details, and raw response."""
-    ob_url = f"{OB_BASE}/session"
+    """Debug the OB API session endpoint — tries multiple URL patterns and methods to find what works."""
     body = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
-    results = {}
-    results["ob_base"] = OB_BASE
-    results["ob_url"] = ob_url
-    results["body"] = body
-    # Try 1: no auth
-    try:
-        r1 = requests.patch(ob_url, json=body, headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=10)
-        results["no_auth"] = {"status": r1.status_code, "body": r1.text[:500], "headers": dict(r1.headers)}
-    except Exception as e:
-        results["no_auth"] = {"error": str(e)}
-    # Try 2: with public API bearer
-    try:
-        tok = get_token()
-        r2 = requests.patch(ob_url, json=body, headers={"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {tok}"}, timeout=10)
-        results["with_public_bearer"] = {"status": r2.status_code, "body": r2.text[:500]}
-    except Exception as e:
-        results["with_public_bearer"] = {"error": str(e)}
+    tok = get_token()
+    hdrs_bare = {"Content-Type": "application/json", "Accept": "application/json"}
+    hdrs_auth = {**hdrs_bare, "Authorization": f"Bearer {tok}"}
+    results = {"ob_base_derived": OB_BASE, "pub_base": BASE_URL, "body": body}
+
+    candidates = [
+        # (label, method, url)
+        ("patch_na2_ob",    "PATCH", f"https://na2.meevo.com/onlinebooking/api/ob/session"),
+        ("patch_na2pub_ob", "PATCH", f"https://na2pub.meevo.com/onlinebooking/api/ob/session"),
+        ("post_na2_ob",     "POST",  f"https://na2.meevo.com/onlinebooking/api/ob/session"),
+        ("patch_na2_v2",    "PATCH", f"https://na2.meevo.com/onlinebooking/api/v2/ob/session"),
+        ("patch_na2_bare",  "PATCH", f"https://na2.meevo.com/ob/session"),
+        ("patch_na2pub_v1", "PATCH", f"https://na2pub.meevo.com/api/ob/session"),
+    ]
+    for label, method, url in candidates:
+        for auth_label, hdrs in [("no_auth", hdrs_bare), ("with_auth", hdrs_auth)]:
+            key = f"{label}_{auth_label}"
+            try:
+                fn = requests.patch if method == "PATCH" else requests.post
+                r = fn(url, json=body, headers=hdrs, timeout=8)
+                results[key] = {"url": url, "status": r.status_code, "body": r.text[:300]}
+                if r.status_code < 400:
+                    results["SUCCESS"] = key
+                    break
+            except Exception as e:
+                results[key] = {"url": url, "error": str(e)[:100]}
+        if "SUCCESS" in results:
+            break
     return results
 
 
