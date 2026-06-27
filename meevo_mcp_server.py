@@ -8,6 +8,7 @@ and book, reschedule, or cancel appointments.
 
 import os
 import time
+import traceback
 import requests
 from datetime import date, timedelta
 from mcp.server.fastmcp import FastMCP
@@ -225,40 +226,49 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 @mcp.tool()
 def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
-    data = meevo_get("/publicapi/v1/services")
-    services = data.get("data") or data.get("Data") or _items(data)
-    result = []
-    for s in services:
-        result.append({
-            "id": s.get("id") or s.get("serviceId") or s.get("ServiceId") or "",
-            "name": s.get("name") or s.get("serviceName") or s.get("ServiceName") or "",
-            "category": s.get("categoryName") or s.get("CategoryName") or s.get("category") or "",
-            "duration_minutes": s.get("duration") or s.get("Duration") or s.get("durationMinutes") or "",
-            "price": s.get("price") or s.get("Price") or s.get("retailPrice") or "",
-        })
-    total = data.get("totalItems") or data.get("TotalItems") or len(services)
-    return {"services": result, "total": total, "page": page}
+    try:
+        data = meevo_get("/publicapi/v1/services")
+        services = data.get("data") or data.get("Data") or _items(data)
+        result = []
+        for s in services:
+            result.append({
+                "id": s.get("id") or s.get("serviceId") or s.get("ServiceId") or "",
+                "name": s.get("name") or s.get("serviceName") or s.get("ServiceName") or "",
+                "category": s.get("categoryName") or s.get("CategoryName") or s.get("category") or "",
+                "duration_minutes": s.get("duration") or s.get("Duration") or s.get("durationMinutes") or "",
+                "price": s.get("price") or s.get("Price") or s.get("retailPrice") or "",
+            })
+        total = data.get("totalItems") or data.get("TotalItems") or len(services)
+        return {"services": result, "total": total, "page": page}
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
-    data = meevo_get("/publicapi/v1/employees")
-    staff = data.get("data") or data.get("Data") or _items(data)
-    result = []
-    for e in staff:
-        cats = e.get("employeeCategories") or []
-        title = cats[0].get("employeeCategoryDisplayName", "") if cats else ""
-        obj_state = e.get("objectState")
-        is_active = str(obj_state).lower() not in ("inactive", "0", "false") if obj_state is not None else True
-        result.append({
-            "id": e.get("id") or e.get("employeeId") or "",
-            "name": f"{e.get('firstName', '')} {e.get('lastName', '')}".strip(),
-            "title": title,
-            "is_active": is_active,
-        })
-    total = data.get("totalItems") or data.get("TotalItems") or len(staff)
-    return {"staff": result, "total": total}
+    try:
+        data = meevo_get("/publicapi/v1/employees")
+        staff = data.get("data") or data.get("Data") or _items(data)
+        result = []
+        for i, e in enumerate(staff):
+            try:
+                cats = e.get("employeeCategories") or []
+                title = cats[0].get("employeeCategoryDisplayName", "") if isinstance(cats, list) and cats and isinstance(cats[0], dict) else ""
+                obj_state = e.get("objectState")
+                is_active = str(obj_state).lower() not in ("inactive", "0", "false") if obj_state is not None else True
+                result.append({
+                    "id": e.get("id") or e.get("employeeId") or "",
+                    "name": f"{e.get('firstName', '')} {e.get('lastName', '')}".strip(),
+                    "title": title,
+                    "is_active": is_active,
+                })
+            except Exception as inner_e:
+                result.append({"error": f"row {i}: {inner_e}", "raw": str(e)[:200], "traceback": traceback.format_exc()})
+        total = data.get("totalItems") or data.get("TotalItems") or len(staff)
+        return {"staff": result, "total": total}
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 if __name__ == "__main__":
