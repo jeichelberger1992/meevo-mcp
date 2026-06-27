@@ -76,7 +76,8 @@ def meevo_delete(path, params=None):
 
 
 def _items(data):
-    for key in ("Clients", "Appointments", "Services", "Employees", "Data", "Items", "Results", "Records"):
+    for key in ("Clients", "Appointments", "Services", "Employees", "Data", "Items", "Results", "Records",
+               "clients", "appointments", "services", "employees", "data", "items", "results", "records"):
         if key in data:
             return data[key]
     return []
@@ -158,7 +159,8 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         body["Notes"] = notes
     try:
         result = meevo_post("/publicapi/v1/appointments", body)
-        appt_id = result.get("AppointmentId") or result.get("Id") or ((result.get("Appointments") or [{}])[0].get("AppointmentId"))
+        appt_id = result.get("AppointmentId") or r
+esult.get("Id") or ((result.get("Appointments") or [{}])[0].get("AppointmentId"))
         return {"success": True, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
