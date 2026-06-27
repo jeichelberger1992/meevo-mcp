@@ -126,9 +126,12 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
     clean_phone = _re.sub(r'\D', '', phone).lstrip('1')
     try:
         all_clients = []
-        for page_num in range(1, 51):
+        for page_num in range(1, 101):
             try:
-                data = meevo_get("/publicapi/v1/clients", {"pageNumber": page_num})
+                page_params = {"pageNumber": page_num}
+                if last_name:
+                    page_params["lastName"] = last_name
+                data = meevo_get("/publicapi/v1/clients", page_params)
             except requests.HTTPError:
                 if page_num > 1:
                     break
