@@ -123,26 +123,33 @@ def debug_api(path: str) -> dict:
 
 @mcp.tool()
 def scan_debug(service_id: str) -> dict:
-    """Debug tool: try scan openings on v2 and v1 endpoints and return raw results."""
+    """Debug tool: try all ScanDateType values (0-3) on v1 to find which returns openings."""
     start = date.today().isoformat()
-    end = (date.today() + timedelta(days=7)).isoformat()
+    end = (date.today() + timedelta(days=14)).isoformat()
     results = {}
-    for version in ("v2", "v1"):
+    for scan_date_type in range(4):
         body = {
-            "ScanDateType": 2,
+            "ScanDateType": scan_date_type,
             "StartDate": f"{start}T00:00:00",
             "EndDate": f"{end}T23:59:59",
             "ScanTimeType": 0,
-            "ScanServices": [{"ServiceId": service_id, "GenderPreferenceEnum": 0}],
+            "IsRescan": False,
+            "ScanServices": [{"ServiceId": service_id}],
         }
-        if version == "v1":
-            body["IsRescan"] = False
-        url = f"{BASE_URL}/publicapi/{version}/scan/openings"
+        url = f"{BASE_URL}/publicapi/v1/scan/openings"
         try:
             r = requests.post(url, params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
-            results[version] = {"status": r.status_code, "body": r.text[:1000]}
+            data = r.json() if r.ok else {}
+            raw_data = data.get("Data") or []
+            openings_count = sum(len(g.get("ServiceOpenings") or []) for g in raw_data)
+            results[f"ScanDateType_{scan_date_type}"] = {
+                "status": r.status_code,
+                "openings": openings_count,
+                "error": (data.get("Error") or {}).get("Message"),
+                "raw_sample": r.text[:300] if not r.ok else None,
+            }
         except Exception as ex:
-            results[version] = {"error": str(ex)}
+            results[f"ScanDateType_{scan_date_type}"] = {"error": str(ex)}
     return results
 
 
