@@ -298,11 +298,9 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
                         "service_name": o.get("ServiceName"),
                     })
             return {"service_id": service_id, "start": start, "end": end, "scan_version": version, "openings": all_openings[:20], "total": len(all_openings)}
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                continue
-            return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else "", "version_tried": version}
-    return {"error": "Scan endpoint not available (404 on both v1 and v2)", "service_id": service_id}
+        except Exception:
+            continue  # try next version
+    return {"error": "Scan endpoint not available on v1 or v2", "service_id": service_id}
 
 
 @mcp.tool()
