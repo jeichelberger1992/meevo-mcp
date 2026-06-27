@@ -123,35 +123,40 @@ def debug_api(path: str) -> dict:
 
 @mcp.tool()
 def scan_debug(service_id: str) -> dict:
-    """Debug tool: try all ScanDateType values (0-3) on v1 to find which returns openings."""
+    """Debug: try multiple scan body variants to find what returns openings."""
     start = date.today().isoformat()
     end = (date.today() + timedelta(days=14)).isoformat()
+    # Service provider IDs to test individually
+    employee_ids = [
+        "b679dcff-a5aa-4e76-a5aa-b45201724a3d",  # Carrie Andrews
+        "f2468a62-159e-4f7f-b5c2-b452017344d4",  # Elle Brimmer
+        "a514a9c0-f211-4712-af61-b45201767282",  # Abby Chrisman
+        "6630930b-9a57-4fd8-9f99-b45201787849",  # Lorna Ruckel
+        "012b9e33-47e4-4796-866f-b45201798854",  # Alexandra Nikitow
+        "752e9867-c736-4c88-a0c3-b474014ed124",  # Karen Knippa
+    ]
     results = {}
-    for scan_date_type in range(4):
-        body = {
-            "ScanDateType": scan_date_type,
-            "StartDate": f"{start}T00:00:00",
-            "EndDate": f"{end}T23:59:59",
-            "ScanTimeType": 0,
-            "IsRescan": False,
-            "ScanServices": [{"ServiceId": service_id}],
-        }
+    def _try(label, body):
         url = f"{BASE_URL}/publicapi/v1/scan/openings"
         try:
             r = requests.post(url, params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
             data = r.json() if r.ok else {}
             raw_data = data.get("Data") or []
-            openings_count = sum(len(g.get("ServiceOpenings") or []) for g in raw_data)
-            results[f"ScanDateType_{scan_date_type}"] = {
-                "status": r.status_code,
-                "openings": openings_count,
-                "error": (data.get("Error") or {}).get("Message"),
-                "raw_sample": r.text[:300] if not r.ok else None,
-            }
+            openings = sum(len(g.get("ServiceOpenings") or []) for g in raw_data)
+            err = (data.get("Error") or {}).get("Message")
+            results[label] = {"status": r.status_code, "openings": openings, "error": err}
         except Exception as ex:
-            results[f"ScanDateType_{scan_date_type}"] = {"error": str(ex)}
+            results[label] = {"error": str(ex)}
+    # Variant A: plain dates, no ScanTimeType
+    _try("A_no_timetype", {"ScanDateType": 1, "StartDate": start, "EndDate": end, "IsRescan": False, "ScanServices": [{"ServiceId": service_id}]})
+    # Variant B: datetime strings, ScanDateType 1
+    _try("B_datetime_type1", {"ScanDateType": 1, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id}]})
+    # Variant C: with all employee IDs at once
+    _try("C_all_employees", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "EmployeeIds": employee_ids}]})
+    # Variant D: each employee individually (first one with results wins)
+    for name, eid in [("Carrie", "b679dcff-a5aa-4e76-a5aa-b45201724a3d"), ("Elle", "f2468a62-159e-4f7f-b5c2-b452017344d4"), ("Abby", "a514a9c0-f211-4712-af61-b45201767282"), ("Lorna", "6630930b-9a57-4fd8-9f99-b45201787849"), ("Alexandra", "012b9e33-47e4-4796-866f-b45201798854"), ("Karen", "752e9867-c736-4c88-a0c3-b474014ed124")]:
+        _try(f"D_{name}", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "EmployeeIds": [eid]}]})
     return results
-
 
 @mcp.tool()
 def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
