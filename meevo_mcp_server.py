@@ -232,19 +232,37 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
     from datetime import timedelta
     start = check_date or date.today().isoformat()
     end = (date.fromisoformat(start) + timedelta(days=days_ahead)).isoformat()
-    body = {
-        "serviceIds": [service_id],
-        "startDate": start,
-        "endDate": end,
-    }
+    scan_service = {"ServiceId": service_id}
     if employee_id:
-        body["employeeIds"] = [employee_id]
+        scan_service["EmployeeId"] = employee_id
+    body = {
+        "StartDate": start,
+        "EndDate": end,
+        "ScanDateType": 0,
+        "ScanTimeType": 0,
+        "IsRescan": False,
+        "ScanServices": [scan_service],
+    }
     try:
-        data = meevo_post("/publicapi/v1/scan", body)
-        openings = data.get("openings") or data.get("Openings") or data.get("availableTimes") or data.get("AvailableTimes") or _items(data)
-        if not openings and isinstance(data, dict):
-            return {"service_id": service_id, "start": start, "end": end, "openings": [], "raw_keys": list(data.keys()), "raw_sample": str(data)[:500]}
-        return {"service_id": service_id, "start": start, "end": end, "openings": openings[:20], "total": len(openings)}
+        data = meevo_post("/publicapi/v1/scan/openings", body)
+        # Response: {"Data": [{"ServiceOpenings": [...]}], "Error": {...}}
+        error = data.get("Error") or {}
+        if error.get("ErrorCode") or error.get("Message"):
+            return {"error": error.get("Message"), "code": error.get("ErrorCode"), "body": str(data)[:500]}
+        raw_data = data.get("Data") or []
+        all_openings = []
+        for group in raw_data:
+            service_openings = group.get("ServiceOpenings") or []
+            for o in service_openings:
+                all_openings.append({
+                    "date": o.get("Date"),
+                    "start_time": o.get("StartTime"),
+                    "end_time": o.get("EndTime"),
+                    "employee_id": o.get("EmployeeId"),
+                    "employee_name": o.get("EmployeeDisplayName") or o.get("EmployeeFirstName","") + " " + o.get("EmployeeLastName",""),
+                    "service_name": o.get("ServiceName"),
+                })
+        return {"service_id": service_id, "start": start, "end": end, "openings": all_openings[:20], "total": len(all_openings)}
     except requests.HTTPError as e:
         return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
 
