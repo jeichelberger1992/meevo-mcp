@@ -123,18 +123,9 @@ def debug_api(path: str) -> dict:
 
 @mcp.tool()
 def scan_debug(service_id: str) -> dict:
-    """Debug: try multiple scan body variants to find what returns openings."""
+    """Debug: try IsGuest=True and various body combos to find what returns openings."""
     start = date.today().isoformat()
     end = (date.today() + timedelta(days=14)).isoformat()
-    # Service provider IDs to test individually
-    employee_ids = [
-        "b679dcff-a5aa-4e76-a5aa-b45201724a3d",  # Carrie Andrews
-        "f2468a62-159e-4f7f-b5c2-b452017344d4",  # Elle Brimmer
-        "a514a9c0-f211-4712-af61-b45201767282",  # Abby Chrisman
-        "6630930b-9a57-4fd8-9f99-b45201787849",  # Lorna Ruckel
-        "012b9e33-47e4-4796-866f-b45201798854",  # Alexandra Nikitow
-        "752e9867-c736-4c88-a0c3-b474014ed124",  # Karen Knippa
-    ]
     results = {}
     def _try(label, body):
         url = f"{BASE_URL}/publicapi/v1/scan/openings"
@@ -144,18 +135,16 @@ def scan_debug(service_id: str) -> dict:
             raw_data = data.get("Data") or []
             openings = sum(len(g.get("ServiceOpenings") or []) for g in raw_data)
             err = (data.get("Error") or {}).get("Message")
-            results[label] = {"status": r.status_code, "openings": openings, "error": err}
+            first = str(raw_data[:1])[:300] if raw_data else None
+            results[label] = {"status": r.status_code, "openings": openings, "error": err, "sample": first}
         except Exception as ex:
             results[label] = {"error": str(ex)}
-    # Variant A: plain dates, no ScanTimeType
-    _try("A_no_timetype", {"ScanDateType": 1, "StartDate": start, "EndDate": end, "IsRescan": False, "ScanServices": [{"ServiceId": service_id}]})
-    # Variant B: datetime strings, ScanDateType 1
-    _try("B_datetime_type1", {"ScanDateType": 1, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id}]})
-    # Variant C: with all employee IDs at once
-    _try("C_all_employees", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "EmployeeIds": employee_ids}]})
-    # Variant D: each employee individually (first one with results wins)
-    for name, eid in [("Carrie", "b679dcff-a5aa-4e76-a5aa-b45201724a3d"), ("Elle", "f2468a62-159e-4f7f-b5c2-b452017344d4"), ("Abby", "a514a9c0-f211-4712-af61-b45201767282"), ("Lorna", "6630930b-9a57-4fd8-9f99-b45201787849"), ("Alexandra", "012b9e33-47e4-4796-866f-b45201798854"), ("Karen", "752e9867-c736-4c88-a0c3-b474014ed124")]:
-        _try(f"D_{name}", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "EmployeeIds": [eid]}]})
+    # IsGuest: True — matches what Meevo's online booking portal uses
+    _try("A_IsGuest_type2", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "IsGuest": True}]})
+    _try("B_IsGuest_type1", {"ScanDateType": 1, "StartDate": start, "EndDate": end, "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "IsGuest": True}]})
+    _try("C_IsGuest_type0", {"ScanDateType": 0, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "IsGuest": True}]})
+    _try("D_no_IsGuest_type1", {"ScanDateType": 1, "StartDate": start, "EndDate": end, "ScanTimeType": 0, "IsRescan": False, "ScanServices": [{"ServiceId": service_id}]})
+    _try("E_IsGuest_no_timetype", {"ScanDateType": 2, "StartDate": f"{start}T00:00:00", "EndDate": f"{end}T23:59:59", "IsRescan": False, "ScanServices": [{"ServiceId": service_id, "IsGuest": True}]})
     return results
 
 @mcp.tool()
