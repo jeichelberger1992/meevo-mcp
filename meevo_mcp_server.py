@@ -5,7 +5,7 @@ Exposes Meevo API endpoints as MCP tools so Conduit's AI agent
 can look up clients, appointments, and services in real-time,
 and book, reschedule, or cancel appointments.
 
-Version: v9 - OB session uses browser-like User-Agent/headers (Meevo blocks python-requests UA)
+Version: v10 - maxOpeningsPerDay 100, no buffer, return cap 200
 """
 
 import os
@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v9")
+    return PlainTextResponse("OK v10")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -347,8 +347,8 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
         "payingClientId": None,
         "isRescan": False,
         "scanOrigin": 1,
-        "maxOpeningsPerDay": 20,
-        "appointmentBufferMinutes": 15,
+        "maxOpeningsPerDay": 100,
+        "appointmentBufferMinutes": 0,
         "maxStartTimeWait": 0,
         "maxWaitTimeBetweenServices": 0,
         "requireSameStartTime": True,
@@ -386,7 +386,7 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
             "service_id": service_id,
             "start": start,
             "end": end,
-            "openings": all_openings[:50],
+            "openings": all_openings[:200],
             "total": len(all_openings),
         }
     except requests.HTTPError as e:
