@@ -82,7 +82,13 @@ def _items(data):
     return []
 
 
-mcp = FastMCP("Meevo")
+mcp = FastMCP("Meevo", host="0.0.0.0")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import PlainTextResponse
+    return PlainTextResponse("OK")
 
 
 @mcp.tool()
@@ -202,6 +208,5 @@ def list_staff(page: int = 1) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.settings.host = "0.0.0.0"
     mcp.settings.port = int(os.environ.get("PORT", 10000))
     mcp.run(transport="streamable-http")
