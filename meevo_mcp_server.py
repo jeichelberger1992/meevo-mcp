@@ -4,6 +4,8 @@ Meevo MCP Server
 Exposes Meevo API endpoints as MCP tools so Conduit's AI agent
 can look up clients, appointments, and services in real-time,
 and book, reschedule, or cancel appointments.
+
+Version: v6 — correct book/cancel/reschedule endpoints + scan v2
 """
 
 import os
@@ -39,6 +41,7 @@ def _auth_headers():
     return {"Authorization": f"Bearer {get_token()}", "Accept": "application/json", "Content-Type": "application/json"}
 
 
+# Standard lowercase params (works for GET endpoints)
 def meevo_get(path, params=None):
     base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
     if params:
@@ -48,29 +51,28 @@ def meevo_get(path, params=None):
     return r.json()
 
 
-def meevo_post(path, body, params=None):
-    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
-    if params:
-        base.update(params)
-    r = requests.post(f"{BASE_URL}{path}", params=base, json=body, headers=_auth_headers(), timeout=15)
+# Capitalized params required by POST/PUT/DELETE booking & scan endpoints
+def _cap_params(extra=None):
+    p = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
+    if extra:
+        p.update(extra)
+    return p
+
+
+def meevo_post(path, body):
+    r = requests.post(f"{BASE_URL}{path}", params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
     r.raise_for_status()
     return r.json() if r.content else {"success": True}
 
 
-def meevo_put(path, body, params=None):
-    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
-    if params:
-        base.update(params)
-    r = requests.put(f"{BASE_URL}{path}", params=base, json=body, headers=_auth_headers(), timeout=15)
+def meevo_put(path, body, extra_params=None):
+    r = requests.put(f"{BASE_URL}{path}", params=_cap_params(extra_params), json=body, headers=_auth_headers(), timeout=15)
     r.raise_for_status()
     return r.json() if r.content else {"success": True}
 
 
-def meevo_delete(path, params=None):
-    base = {"tenantId": TENANT_ID, "locationId": LOCATION_ID}
-    if params:
-        base.update(params)
-    r = requests.delete(f"{BASE_URL}{path}", params=base, headers=_auth_headers(), timeout=15)
+def meevo_delete(path, extra_params=None):
+    r = requests.delete(f"{BASE_URL}{path}", params=_cap_params(extra_params), headers=_auth_headers(), timeout=15)
     r.raise_for_status()
     return r.json() if r.content else {"success": True}
 
@@ -103,12 +105,12 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK")
+    return PlainTextResponse("OK v6")
 
 
 @mcp.tool()
 def debug_api(path: str) -> dict:
-    """Call any Meevo API path and return the raw response."""
+    """Call any Meevo API path (GET) and return the raw response."""
     try:
         data = meevo_get(path)
         sample = data
@@ -120,8 +122,33 @@ def debug_api(path: str) -> dict:
 
 
 @mcp.tool()
+def scan_debug(service_id: str) -> dict:
+    """Debug tool: try scan openings on v2 and v1 endpoints and return raw results."""
+    start = date.today().isoformat()
+    end = (date.today() + timedelta(days=7)).isoformat()
+    results = {}
+    for version in ("v2", "v1"):
+        body = {
+            "ScanDateType": 0,
+            "StartDate": start,
+            "EndDate": end,
+            "ScanTimeType": 0,
+            "ScanServices": [{"ServiceId": service_id, "GenderPreferenceEnum": 0}],
+        }
+        if version == "v1":
+            body["IsRescan"] = False
+        url = f"{BASE_URL}/publicapi/{version}/scan/openings"
+        try:
+            r = requests.post(url, params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
+            results[version] = {"status": r.status_code, "body": r.text[:1000]}
+        except Exception as ex:
+            results[version] = {"error": str(ex)}
+    return results
+
+
+@mcp.tool()
 def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
-    """Search for Meevo clients by name, phone, or email. Fetches up to 50 pages and filters locally."""
+    """Search for Meevo clients by name, phone, or email. Fetches up to 100 pages and filters locally."""
     import re as _re
     clean_phone = _re.sub(r'\D', '', phone).lstrip('1')
     try:
@@ -213,6 +240,7 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
         dt = _get(a, "StartDateTime", "startDateTime", "Date", "date")
         entry = {
             "appointment_id": _get(a, "AppointmentId", "appointmentId", "Id", "id"),
+            "appointment_service_id": _get(a, "AppointmentServiceId", "appointmentServiceId"),
             "date": dt,
             "service": _get(a, "ServiceName", "serviceName", "Service", "service"),
             "staff": _get(a, "EmployeeName", "employeeName", "Employee", "employee"),
@@ -228,94 +256,112 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
 
 @mcp.tool()
 def check_availability(service_id: str, check_date: str = "", days_ahead: int = 7, employee_id: str = "") -> dict:
-    """Check available appointment openings for a service using Meevo's Scan endpoint. check_date is YYYY-MM-DD (defaults to today)."""
-    from datetime import timedelta
+    """Check available appointment openings for a service. check_date is YYYY-MM-DD (defaults to today)."""
     start = check_date or date.today().isoformat()
     end = (date.fromisoformat(start) + timedelta(days=days_ahead)).isoformat()
-    scan_service = {"ServiceId": service_id}
+    scan_service = {"ServiceId": service_id, "GenderPreferenceEnum": 0}
     if employee_id:
-        scan_service["EmployeeId"] = employee_id
-    body = {
-        "StartDate": start,
-        "EndDate": end,
-        "ScanDateType": 0,
-        "ScanTimeType": 0,
-        "IsRescan": False,
-        "ScanServices": [scan_service],
-    }
-    try:
-        # Scan endpoint uses TenantId/LocationId (capitalized) as query params
-        r = requests.post(
-            f"{BASE_URL}/publicapi/v1/scan/openings",
-            params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
-            json=body,
-            headers=_auth_headers(),
-            timeout=30
-        )
-        r.raise_for_status()
-        data = r.json()
-        # Response: {"Data": [{"ServiceOpenings": [...]}], "Error": {...}}
-        error = data.get("Error") or {}
-        if error.get("ErrorCode") or error.get("Message"):
-            return {"error": error.get("Message"), "code": error.get("ErrorCode"), "body": str(data)[:500]}
-        raw_data = data.get("Data") or []
-        all_openings = []
-        for group in raw_data:
-            service_openings = group.get("ServiceOpenings") or []
-            for o in service_openings:
-                all_openings.append({
-                    "date": o.get("Date"),
-                    "start_time": o.get("StartTime"),
-                    "end_time": o.get("EndTime"),
-                    "employee_id": o.get("EmployeeId"),
-                    "employee_name": o.get("EmployeeDisplayName") or o.get("EmployeeFirstName","") + " " + o.get("EmployeeLastName",""),
-                    "service_name": o.get("ServiceName"),
-                })
-        return {"service_id": service_id, "start": start, "end": end, "openings": all_openings[:20], "total": len(all_openings)}
-    except requests.HTTPError as e:
-        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
+        scan_service["EmployeeIds"] = [employee_id]
+    for version in ("v2", "v1"):
+        body = {
+            "ScanDateType": 0,
+            "StartDate": start,
+            "EndDate": end,
+            "ScanTimeType": 0,
+            "ScanServices": [scan_service],
+        }
+        if version == "v1":
+            body["IsRescan"] = False
+        url = f"{BASE_URL}/publicapi/{version}/scan/openings"
+        try:
+            r = requests.post(url, params=_cap_params(), json=body, headers=_auth_headers(), timeout=20)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            data = r.json()
+            error = data.get("Error") or {}
+            if error.get("ErrorCode") or error.get("Message"):
+                return {"error": error.get("Message"), "code": error.get("ErrorCode"), "raw": str(data)[:500]}
+            raw_data = data.get("Data") or []
+            all_openings = []
+            for group in raw_data:
+                for o in (group.get("ServiceOpenings") or []):
+                    emp_name = o.get("EmployeeDisplayName") or (
+                        (_str(o.get("EmployeeFirstName", "")) + " " + _str(o.get("EmployeeLastName", ""))).strip()
+                    )
+                    all_openings.append({
+                        "date": o.get("Date"),
+                        "start_time": o.get("StartTime"),
+                        "end_time": o.get("EndTime"),
+                        "employee_id": o.get("EmployeeId"),
+                        "employee_name": emp_name,
+                        "service_name": o.get("ServiceName"),
+                    })
+            return {"service_id": service_id, "start": start, "end": end, "scan_version": version, "openings": all_openings[:20], "total": len(all_openings)}
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                continue
+            return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else "", "version_tried": version}
+    return {"error": "Scan endpoint not available (404 on both v1 and v2)", "service_id": service_id}
 
 
 @mcp.tool()
 def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", notes: str = "") -> dict:
     """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS."""
-    service_entry = {"ServiceId": service_id, "StartDateTime": start_datetime}
+    body = {
+        "ClientId": client_id,
+        "ServiceId": service_id,
+        "StartDateTime": start_datetime,
+    }
     if employee_id:
-        service_entry["EmployeeId"] = employee_id
-    body = {"ClientId": client_id, "Services": [service_entry]}
+        body["EmployeeId"] = employee_id
     if notes:
         body["Notes"] = notes
     try:
-        result = meevo_post("/publicapi/v1/appointments", body)
-        appts = result.get("Appointments") or result.get("appointments") or [{}]
-        appt_id = _get(result, "AppointmentId", "appointmentId", "Id", "id") or _get(appts[0], "AppointmentId", "appointmentId", "Id", "id")
-        return {"success": True, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
+        result = meevo_post("/publicapi/v1/book/service", body)
+        appt_svc_id = _get(result, "AppointmentServiceId", "appointmentServiceId", "Id", "id")
+        appt_id = _get(result, "AppointmentId", "appointmentId")
+        return {"success": True, "appointment_service_id": appt_svc_id, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
 
 
 @mcp.tool()
-def reschedule_appointment(appointment_id: str, new_start_datetime: str, employee_id: str = "") -> dict:
-    """Reschedule an existing appointment. new_start_datetime format: YYYY-MM-DDTHH:MM:SS."""
+def reschedule_appointment(appointment_service_id: str, new_start_datetime: str, employee_id: str = "") -> dict:
+    """Reschedule an existing appointment service. appointment_service_id comes from get_client_appointments or book_appointment. new_start_datetime format: YYYY-MM-DDTHH:MM:SS."""
+    try:
+        svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
+        row_version = _get(svc, "RowVersion", "rowVersion")
+    except requests.HTTPError as e:
+        return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
     body = {"StartDateTime": new_start_datetime}
     if employee_id:
         body["EmployeeId"] = employee_id
+    if row_version:
+        body["RowVersion"] = row_version
     try:
-        result = meevo_put(f"/publicapi/v1/appointments/{appointment_id}", body)
-        return {"success": True, "appointment_id": appointment_id, "new_start_datetime": new_start_datetime, "raw": result}
+        result = meevo_put(f"/publicapi/v1/book/service/{appointment_service_id}", body)
+        return {"success": True, "appointment_service_id": appointment_service_id, "new_start_datetime": new_start_datetime, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
 
 
 @mcp.tool()
-def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> dict:
-    """Cancel an existing appointment. Always confirm with the client first."""
-    params = {}
-    if cancellation_reason:
-        params["CancellationReason"] = cancellation_reason
+def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str = "") -> dict:
+    """Cancel an existing appointment service. appointment_service_id comes from get_client_appointments or book_appointment. Always confirm with the client first."""
     try:
-        result = meevo_delete(f"/publicapi/v1/appointments/{appointment_id}", params or None)
-        return {"success": True, "appointment_id": appointment_id, "cancelled": True, "raw": result}
+        svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
+        row_version = _get(svc, "RowVersion", "rowVersion")
+    except requests.HTTPError as e:
+        return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
+    extra = {}
+    if row_version:
+        extra["RowVersion"] = row_version
+    if cancellation_reason_id:
+        extra["CancellationReasonId"] = cancellation_reason_id
+    try:
+        result = meevo_delete(f"/publicapi/v1/book/service/{appointment_service_id}", extra or None)
+        return {"success": True, "appointment_service_id": appointment_service_id, "cancelled": True, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
 
