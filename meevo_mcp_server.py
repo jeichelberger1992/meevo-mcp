@@ -150,6 +150,31 @@ async def health_check(request):
 
 
 @mcp.tool()
+def debug_ob_session() -> dict:
+    """Debug the OB API session call — returns OB URL, request details, and raw response."""
+    ob_url = f"{OB_BASE}/session"
+    body = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
+    results = {}
+    results["ob_base"] = OB_BASE
+    results["ob_url"] = ob_url
+    results["body"] = body
+    # Try 1: no auth
+    try:
+        r1 = requests.patch(ob_url, json=body, headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=10)
+        results["no_auth"] = {"status": r1.status_code, "body": r1.text[:500], "headers": dict(r1.headers)}
+    except Exception as e:
+        results["no_auth"] = {"error": str(e)}
+    # Try 2: with public API bearer
+    try:
+        tok = get_token()
+        r2 = requests.patch(ob_url, json=body, headers={"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {tok}"}, timeout=10)
+        results["with_public_bearer"] = {"status": r2.status_code, "body": r2.text[:500]}
+    except Exception as e:
+        results["with_public_bearer"] = {"error": str(e)}
+    return results
+
+
+@mcp.tool()
 def debug_api(path: str) -> dict:
     """Call any Meevo API path (GET) and return the raw response."""
     try:
