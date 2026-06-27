@@ -244,7 +244,16 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
         "ScanServices": [scan_service],
     }
     try:
-        data = meevo_post("/publicapi/v1/scan/openings", body)
+        # Scan endpoint uses TenantId/LocationId (capitalized) as query params
+        r = requests.post(
+            f"{BASE_URL}/publicapi/v1/scan/openings",
+            params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
+            json=body,
+            headers=_auth_headers(),
+            timeout=30
+        )
+        r.raise_for_status()
+        data = r.json()
         # Response: {"Data": [{"ServiceOpenings": [...]}], "Error": {...}}
         error = data.get("Error") or {}
         if error.get("ErrorCode") or error.get("Message"):
