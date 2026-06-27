@@ -128,10 +128,10 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
         for page_num in range(1, 11):
             try:
                 data = meevo_get("/publicapi/v1/clients", {"pageNumber": page_num})
-            except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    break  # no more pages
-                raise
+            except requests.HTTPError:
+                if page_num > 1:
+                    break  # no more pages, any error means stop
+                raise  # page 1 failing is a real error
             batch = _items(data)
             if not batch:
                 break
