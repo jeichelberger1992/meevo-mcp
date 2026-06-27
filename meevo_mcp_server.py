@@ -247,7 +247,9 @@ def list_services(page: int = 1) -> dict:
     all_services = []
     page_num = 1
     while page_num <= 20:
-        data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num, "itemsPerPage": 100})
+        r = requests.get(f"{BASE_URL}/publicapi/v1/services", params={"tenantId": TENANT_ID, "pageNumber": page_num, "itemsPerPage": 100}, headers=_auth_headers(), timeout=15)
+        r.raise_for_status()
+        data = r.json()
         batch = data.get("data") or data.get("Data") or _items(data)
         if not batch:
             break
