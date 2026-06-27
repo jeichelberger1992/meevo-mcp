@@ -120,6 +120,38 @@ def debug_api(path: str) -> dict:
 
 
 @mcp.tool()
+def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
+    """Search for Meevo clients by name, phone, or email using the filter endpoint."""
+    clean_phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+1", "")
+    body = {}
+    if last_name:
+        body["lastName"] = last_name
+    if first_name:
+        body["firstName"] = first_name
+    if clean_phone:
+        body["phoneNumber"] = clean_phone
+    if email:
+        body["emailAddress"] = email
+    try:
+        data = meevo_post("/publicapi/v1/clients/search", body)
+        clients = data.get("data") or data.get("Data") or _items(data)
+        if not clients:
+            return {"found": False, "raw_keys": list(data.keys()) if isinstance(data, dict) else str(data)[:300]}
+        results = []
+        for c in clients[:5]:
+            phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
+            results.append({
+                "client_id": _get(c, "id", "clientId", "Id", "ClientId"),
+                "name": f"{_get(c, 'firstName', 'FirstName')} {_get(c, 'lastName', 'LastName')}".strip(),
+                "email": _get(c, "emailAddress", "email", "Email", "EmailAddress"),
+                "phones": [_get(p, "number", "Number", "phoneNumber", "PhoneNumber") for p in phones],
+            })
+        return {"found": True, "clients": results, "total": len(clients)}
+    except requests.HTTPError as e:
+        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
 def lookup_client(phone: str = "", email: str = "") -> dict:
     """Look up a Meevo client by phone number or email address."""
     if not phone and not email:
