@@ -5,7 +5,7 @@ Exposes Meevo API endpoints as MCP tools so Conduit's AI agent
 can look up clients, appointments, and services in real-time,
 and book, reschedule, or cancel appointments.
 
-Version: v7 - check_availability now uses OB API (na2.meevo.com/onlinebooking/api/ob/scanforopenings)
+Version: v8 - fixed OB session auth (no Authorization header needed for OB session PATCH)
 """
 
 import os
@@ -55,24 +55,20 @@ def _auth_headers():
 
 
 def get_ob_token():
-    """Get a bearer token from the OB API session endpoint."""
+    """Get a bearer token from the OB API session endpoint.
+    The OB session endpoint is public — no Authorization header needed."""
     global _ob_token, _ob_token_expiry
     if _ob_token and time.time() < _ob_token_expiry:
         return _ob_token
-    # Include the public API bearer token — OB session requires it to validate the tenant
     r = requests.patch(
         f"{OB_BASE}/session",
         json={"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)},
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {get_token()}",
         },
         timeout=10,
     )
-    if r.status_code == 403:
-        # Return the raw error so we can debug
-        raise requests.HTTPError(f"OB session 403: {r.text[:300]}", response=r)
     r.raise_for_status()
     d = r.json()
     _ob_token = d.get("bearerToken") or d.get("BearerToken")
@@ -146,7 +142,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v7")
+    return PlainTextResponse("OK v8")
 
 
 @mcp.tool()
