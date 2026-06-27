@@ -194,7 +194,7 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 @mcp.tool()
 def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
-    data = meevo_get("/publicapi/v1/services", {"PageNumber": page, "ItemsPerPage": 50})
+    data = meevo_get("/publicapi/v1/services", {"pageNumber": page, "itemsPerPage": 50})
     services = _items(data)
     return {"services": [{"id": s.get("ServiceId") or s.get("Id"), "name": s.get("ServiceName") or s.get("Name", ""), "category": s.get("CategoryName") or s.get("Category", ""), "duration_minutes": s.get("Duration") or s.get("DurationMinutes", ""), "price": s.get("Price") or s.get("RetailPrice", "")} for s in services], "total": data.get("TotalItems") or data.get("TotalCount") or len(services), "page": page, "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
 
@@ -202,7 +202,7 @@ def list_services(page: int = 1) -> dict:
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
-    data = meevo_get("/publicapi/v1/employees", {"PageNumber": page, "ItemsPerPage": 50})
+    data = meevo_get("/publicapi/v1/employees", {"pageNumber": page, "itemsPerPage": 50})
     staff = _items(data)
     return {"staff": [{"id": e.get("EmployeeId") or e.get("Id"), "name": f"{e.get('FirstName', '')} {e.get('LastName', '')}".strip(), "title": e.get("Title") or e.get("JobTitle", ""), "is_active": e.get("IsActive", True)} for e in staff], "total": data.get("TotalItems") or data.get("TotalCount") or len(staff), "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
 
