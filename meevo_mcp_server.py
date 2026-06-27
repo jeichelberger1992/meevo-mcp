@@ -83,6 +83,14 @@ def _items(data):
     return []
 
 
+def _get(obj, *keys, default=""):
+    for k in keys:
+        v = obj.get(k)
+        if v is not None:
+            return v
+    return default
+
+
 mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 
 
@@ -97,7 +105,10 @@ def debug_api(path: str) -> dict:
     """Call any Meevo API path and return the raw response. Use for debugging. Example: /publicapi/v1/employees"""
     try:
         data = meevo_get(path)
-        return {"path": path, "type": type(data).__name__, "keys": list(data.keys()) if isinstance(data, dict) else None, "length": len(data) if isinstance(data, (list, dict)) else None, "sample": str(data)[:2000]}
+        sample = data
+        if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
+            sample = {"envelope_keys": list(data.keys()), "first_item_keys": list(data["data"][0].keys()), "first_item": data["data"][0], "total_items": len(data["data"])}
+        return {"path": path, "type": type(data).__name__, "keys": list(data.keys()) if isinstance(data, dict) else None, "length": len(data) if isinstance(data, (list, dict)) else None, "sample": str(sample)[:3000]}
     except requests.HTTPError as e:
         return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
 
@@ -113,8 +124,10 @@ def lookup_client(phone: str = "", email: str = "") -> dict:
     if not items:
         return {"found": False, "message": f"No client found for {phone or email}.", "raw_keys": list(data.keys()) if isinstance(data, dict) else str(data)[:200]}
     c = items[0]
-    phones = c.get("PhoneNumbers") or []
-    return {"found": True, "client_id": c.get("ClientId") or c.get("Id"), "name": f"{c.get('FirstName', '')} {c.get('LastName', '')}".strip(), "email": c.get("Email") or c.get("EmailAddress", ""), "phones": [p.get("Number") or p.get("PhoneNumber", "") for p in phones], "birth_date": c.get("BirthDate", ""), "notes": c.get("Notes", ""), "is_active": c.get("IsActive", True)}
+    phones = c.get("PhoneNumbers") or c.get("phoneNumbers") or []
+    first = _get(c, "FirstName", "firstName")
+    last = _get(c, "LastName", "lastName")
+    return {"found": True, "client_id": _get(c, "ClientId", "clientId", "Id", "id"), "name": f"{first} {last}".strip(), "email": _get(c, "Email", "email", "EmailAddress", "emailAddress"), "phones": [_get(p, "Number", "number", "PhoneNumber", "phoneNumber") for p in phones], "birth_date": _get(c, "BirthDate", "birthDate"), "notes": _get(c, "Notes", "notes"), "is_active": c.get("IsActive") if c.get("IsActive") is not None else c.get("isActive", True)}
 
 
 @mcp.tool()
@@ -127,8 +140,8 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
     today = date.today().isoformat()
     upcoming, past = [], []
     for a in appts:
-        dt = a.get("StartDateTime") or a.get("Date", "")
-        entry = {"appointment_id": a.get("AppointmentId") or a.get("Id"), "date": dt, "service": a.get("ServiceName") or a.get("Service", ""), "staff": a.get("EmployeeName") or a.get("Employee", ""), "status": a.get("StatusDescription") or a.get("Status", ""), "duration_minutes": a.get("Duration") or a.get("DurationMinutes", "")}
+        dt = _get(a, "StartDateTime", "startDateTime", "Date", "date")
+        entry = {"appointment_id": _get(a, "AppointmentId", "appointmentId", "Id", "id"), "date": dt, "service": _get(a, "ServiceName", "serviceName", "Service", "service"), "staff": _get(a, "EmployeeName", "employeeName", "Employee", "employee"), "status": _get(a, "StatusDescription", "statusDescription", "Status", "status"), "duration_minutes": _get(a, "Duration", "duration", "DurationMinutes", "durationMinutes")}
         if dt >= today:
             upcoming.append(entry)
         else:
@@ -144,7 +157,7 @@ def check_availability(service_id: str, check_date: str = "", employee_id: str =
     if employee_id:
         params["EmployeeId"] = employee_id
     data = meevo_get("/publicapi/v1/appointments/availabletimes", params)
-    slots = data.get("AvailableTimes") or data.get("Times") or _items(data)
+    slots = data.get("AvailableTimes") or data.get("availableTimes") or data.get("Times") or data.get("times") or _items(data)
     return {"service_id": service_id, "date": d, "available_times": slots[:20], "total_slots": len(slots)}
 
 
@@ -159,7 +172,8 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         body["Notes"] = notes
     try:
         result = meevo_post("/publicapi/v1/appointments", body)
-        appt_id = result.get("AppointmentId") or result.get("Id") or ((result.get("Appointments") or [{}])[0].get("AppointmentId"))
+        appts = result.get("Appointments") or result.get("appointments") or [{}]
+        appt_id = _get(result, "AppointmentId", "appointmentId", "Id", "id") or _get(appts[0], "AppointmentId", "appointmentId", "Id", "id")
         return {"success": True, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
@@ -196,7 +210,11 @@ def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
     data = meevo_get("/publicapi/v1/services")
     services = _items(data)
-    return {"services": [{"id": s.get("ServiceId") or s.get("Id"), "name": s.get("ServiceName") or s.get("Name", ""), "category": s.get("CategoryName") or s.get("Category", ""), "duration_minutes": s.get("Duration") or s.get("DurationMinutes", ""), "price": s.get("Price") or s.get("RetailPrice", "")} for s in services], "total": data.get("TotalItems") or data.get("TotalCount") or len(services), "page": page, "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
+    result = []
+    for s in services:
+        result.append({"id": _get(s, "ServiceId", "serviceId", "Id", "id"), "name": _get(s, "ServiceName", "serviceName", "Name", "name"), "category": _get(s, "CategoryName", "categoryName", "Category", "category"), "duration_minutes": _get(s, "Duration", "duration", "DurationMinutes", "durationMinutes"), "price": _get(s, "Price", "price", "RetailPrice", "retailPrice")})
+    total = _get(data, "TotalItems", "totalItems", "TotalCount", "totalCount", default=None) or len(services)
+    return {"services": result, "total": total, "page": page, "_sample": services[0] if services else None}
 
 
 @mcp.tool()
@@ -204,8 +222,13 @@ def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
     data = meevo_get("/publicapi/v1/employees")
     staff = _items(data)
-    return {"staff": [{"id": e.get("EmployeeId") or e.get("Id"), "name": f"{e.get('FirstName', '')} {e.get('LastName', '')}".strip(), "title": e.get("Title") or e.get("JobTitle", ""), "is_active": e.get("IsActive", True)} for e in staff], "total": data.get("TotalItems") or data.get("TotalCount") or len(staff), "_raw_keys": list(data.keys()) if isinstance(data, dict) else ""}
-
+    result = []
+    for e in staff:
+        first = _get(e, "FirstName", "firstName")
+        last = _get(e, "LastName", "lastName")
+        result.append({"id": _get(e, "EmployeeId", "employeeId", "Id", "id"), "name": f"{first} {last}".strip(), "title": _get(e, "Title", "title", "JobTitle", "jobTitle"), "is_active": e.get("IsActive") if e.get("IsActive") is not None else e.get("isActive", True)})
+    total = _get(data, "TotalItems", "totalItems", "TotalCount", "totalCount", default=None) or len(staff)
+    return {"staff": result, "total": total, "_sample": staff[0] if staff else None}
 
 
 if __name__ == "__main__":
