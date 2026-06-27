@@ -226,7 +226,6 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
     data = meevo_get("/publicapi/v1/services")
-    # Meevo returns items in data["data"] (lowercase camelCase envelope)
     services = data.get("data") or data.get("Data") or _items(data)
     result = []
     for s in services:
@@ -245,17 +244,18 @@ def list_services(page: int = 1) -> dict:
 def list_staff(page: int = 1) -> dict:
     """List all staff/employees at the spa with names and IDs."""
     data = meevo_get("/publicapi/v1/employees")
-    # Meevo returns employees in data["data"] (lowercase camelCase envelope)
     staff = data.get("data") or data.get("Data") or _items(data)
     result = []
     for e in staff:
         cats = e.get("employeeCategories") or []
         title = cats[0].get("employeeCategoryDisplayName", "") if cats else ""
+        obj_state = e.get("objectState")
+        is_active = str(obj_state).lower() not in ("inactive", "0", "false") if obj_state is not None else True
         result.append({
             "id": e.get("id") or e.get("employeeId") or "",
             "name": f"{e.get('firstName', '')} {e.get('lastName', '')}".strip(),
             "title": title,
-            "is_active": e.get("objectState", "").lower() != "inactive",
+            "is_active": is_active,
         })
     total = data.get("totalItems") or data.get("TotalItems") or len(staff)
     return {"staff": result, "total": total}
