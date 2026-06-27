@@ -120,6 +120,20 @@ def debug_api(path: str) -> dict:
 
 
 @mcp.tool()
+def debug_services_noloc() -> dict:
+    """Fetch services without locationId filter to check if more services are available."""
+    try:
+        r = requests.get(f"{BASE_URL}/publicapi/v1/services", params={"tenantId": TENANT_ID}, headers=_auth_headers(), timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        batch = data.get("data") or []
+        names = [s.get("displayName") or s.get("serviceDisplayName","") for s in batch]
+        return {"count_without_loc": len(batch), "names": names, "envelope_keys": list(data.keys())}
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
 def lookup_client(phone: str = "", email: str = "") -> dict:
     """Look up a Meevo client by phone number or email address."""
     if not phone and not email:
