@@ -59,12 +59,20 @@ def get_ob_token():
     global _ob_token, _ob_token_expiry
     if _ob_token and time.time() < _ob_token_expiry:
         return _ob_token
+    # Include the public API bearer token — OB session requires it to validate the tenant
     r = requests.patch(
         f"{OB_BASE}/session",
         json={"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)},
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {get_token()}",
+        },
         timeout=10,
     )
+    if r.status_code == 403:
+        # Return the raw error so we can debug
+        raise requests.HTTPError(f"OB session 403: {r.text[:300]}", response=r)
     r.raise_for_status()
     d = r.json()
     _ob_token = d.get("bearerToken") or d.get("BearerToken")
