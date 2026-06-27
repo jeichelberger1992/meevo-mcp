@@ -154,21 +154,17 @@ async def health_check(request):
 @mcp.custom_route("/test_ob", methods=["GET"])
 async def test_ob(request):
     from starlette.responses import JSONResponse
+    global _ob_token, _ob_token_expiry
+    # Force refresh
+    _ob_token = None
+    _ob_token_expiry = 0.0
     try:
-        r = requests.patch(
-            f"{OB_BASE}/session",
-            json={"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)},
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            timeout=10,
-        )
-        return JSONResponse({
-            "ob_base": OB_BASE,
-            "status": r.status_code,
-            "body_snippet": r.text[:300],
-            "request_headers": dict(r.request.headers),
-        })
+        tok = get_ob_token()
+        return JSONResponse({"success": True, "ob_base": OB_BASE, "token_len": len(tok) if tok else 0})
+    except requests.HTTPError as e:
+        return JSONResponse({"success": False, "ob_base": OB_BASE, "http_status": e.response.status_code if e.response else None, "error": str(e)[:200], "body": e.response.text[:200] if e.response else ""})
     except Exception as e:
-        return JSONResponse({"ob_base": OB_BASE, "error": str(e)})
+        return JSONResponse({"success": False, "ob_base": OB_BASE, "error": str(e)[:300]})
 
 
 @mcp.tool()
