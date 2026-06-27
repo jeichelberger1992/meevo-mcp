@@ -145,6 +145,26 @@ async def health_check(request):
     return PlainTextResponse("OK v8")
 
 
+@mcp.custom_route("/test_ob", methods=["GET"])
+async def test_ob(request):
+    from starlette.responses import JSONResponse
+    try:
+        r = requests.patch(
+            f"{OB_BASE}/session",
+            json={"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)},
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=10,
+        )
+        return JSONResponse({
+            "ob_base": OB_BASE,
+            "status": r.status_code,
+            "body_snippet": r.text[:300],
+            "request_headers": dict(r.request.headers),
+        })
+    except Exception as e:
+        return JSONResponse({"ob_base": OB_BASE, "error": str(e)})
+
+
 @mcp.tool()
 def debug_ob_session() -> dict:
     """Debug the OB API session endpoint — tries multiple URL patterns and methods to find what works."""
