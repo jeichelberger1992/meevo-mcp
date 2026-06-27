@@ -232,19 +232,30 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 @mcp.tool()
 def list_services(page: int = 1) -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
-    data = meevo_get("/publicapi/v1/services")
-    services = data.get("data") or data.get("Data") or _items(data)
+    all_services = []
+    page_num = 1
+    while True:
+        data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num, "itemsPerPage": 100})
+        batch = data.get("data") or data.get("Data") or _items(data)
+        if not batch:
+            break
+        all_services.extend(batch)
+        total = data.get("totalItems") or data.get("totalCount") or data.get("TotalItems") or 0
+        if len(all_services) >= int(total or 0) or len(batch) < 100:
+            break
+        page_num += 1
+        if page_num > 10:
+            break
     result = []
-    for s in services:
+    for s in all_services:
         result.append({
             "id": _str(s.get("id") or s.get("serviceId")),
-            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
+            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name")),
             "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
             "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
             "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
         })
-    first_keys = list(services[0].keys()) if services else []
-    return {"services": result, "total": _str(len(services)), "page": _str(page), "_first_item_keys": first_keys}
+    return {"services": result, "total": _str(len(result))}
 
 @mcp.tool()
 def list_staff(page: int = 1) -> dict:
