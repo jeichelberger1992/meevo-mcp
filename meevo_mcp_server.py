@@ -82,7 +82,7 @@ def _items(data):
     return []
 
 
-mcp = FastMCP("Meevo", host="0.0.0.0")
+mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 
 
 @mcp.custom_route("/health", methods=["GET"])
