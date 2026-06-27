@@ -120,20 +120,6 @@ def debug_api(path: str) -> dict:
 
 
 @mcp.tool()
-def debug_services_noloc() -> dict:
-    """Fetch services without locationId filter to check if more services are available."""
-    try:
-        r = requests.get(f"{BASE_URL}/publicapi/v1/services", params={"tenantId": TENANT_ID}, headers=_auth_headers(), timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        batch = data.get("data") or []
-        names = [s.get("displayName") or s.get("serviceDisplayName","") for s in batch]
-        return {"count_without_loc": len(batch), "names": names, "envelope_keys": list(data.keys())}
-    except requests.HTTPError as e:
-        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
-
-
-@mcp.tool()
 def lookup_client(phone: str = "", email: str = "") -> dict:
     """Look up a Meevo client by phone number or email address."""
     if not phone and not email:
@@ -242,31 +228,23 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 
 
 @mcp.tool()
-def list_services(page: int = 1) -> dict:
+def list_services() -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
-    all_services = []
-    page_num = 1
-    while page_num <= 20:
-        data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num, "itemsPerPage": 100})
-        batch = data.get("data") or data.get("Data") or _items(data)
-        if not batch:
-            break
-        all_services.extend(batch)
-        page_size = int(data.get("itemsPerPage") or 20)
-        if len(batch) < page_size:
-            break
-        page_num += 1
-    result = []
-    for s in all_services:
-        result.append({
-            "id": _str(s.get("id") or s.get("serviceId")),
-            "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
-            "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
-            "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
-            "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
-        })
-    first_keys = list(all_services[0].keys()) if all_services else []
-    return {"services": result, "total": _str(len(result)), "_first_item_keys": first_keys, "_first_item": all_services[0] if all_services else {}}
+    try:
+        data = meevo_get("/publicapi/v1/services")
+        all_services = data.get("data") or data.get("Data") or _items(data)
+        result = []
+        for s in all_services:
+            result.append({
+                "id": _str(s.get("id") or s.get("serviceId")),
+                "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
+                "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
+                "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
+                "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
+            })
+        return {"services": result, "total": _str(len(result))}
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
 
 
 @mcp.tool()
