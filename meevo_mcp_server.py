@@ -231,8 +231,15 @@ def cancel_appointment(appointment_id: str, cancellation_reason: str = "") -> di
 def list_services() -> dict:
     """List all services offered at the spa with IDs, durations, and prices."""
     try:
-        data = meevo_get("/publicapi/v1/services")
-        all_services = data.get("data") or data.get("Data") or _items(data)
+        all_services = []
+        for page_num in range(1, 20):
+            data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num})
+            batch = data.get("data") or data.get("Data") or _items(data)
+            if not batch:
+                break
+            all_services.extend(batch)
+            if len(batch) < 20:
+                break
         result = []
         for s in all_services:
             result.append({
