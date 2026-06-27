@@ -227,15 +227,26 @@ def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int
 
 
 @mcp.tool()
-def check_availability(service_id: str, check_date: str = "", employee_id: str = "") -> dict:
-    """Check available appointment times for a service on a given date (YYYY-MM-DD)."""
-    d = check_date or date.today().isoformat()
-    params = {"ServiceId": service_id, "Date": d}
+def check_availability(service_id: str, check_date: str = "", days_ahead: int = 7, employee_id: str = "") -> dict:
+    """Check available appointment openings for a service using Meevo's Scan endpoint. check_date is YYYY-MM-DD (defaults to today)."""
+    from datetime import timedelta
+    start = check_date or date.today().isoformat()
+    end = (date.fromisoformat(start) + timedelta(days=days_ahead)).isoformat()
+    body = {
+        "serviceIds": [service_id],
+        "startDate": start,
+        "endDate": end,
+    }
     if employee_id:
-        params["EmployeeId"] = employee_id
-    data = meevo_get("/publicapi/v1/appointments/availabletimes", params)
-    slots = data.get("AvailableTimes") or data.get("availableTimes") or data.get("Times") or data.get("times") or _items(data)
-    return {"service_id": service_id, "date": d, "available_times": slots[:20], "total_slots": len(slots)}
+        body["employeeIds"] = [employee_id]
+    try:
+        data = meevo_post("/publicapi/v1/scan", body)
+        openings = data.get("openings") or data.get("Openings") or data.get("availableTimes") or data.get("AvailableTimes") or _items(data)
+        if not openings and isinstance(data, dict):
+            return {"service_id": service_id, "start": start, "end": end, "openings": [], "raw_keys": list(data.keys()), "raw_sample": str(data)[:500]}
+        return {"service_id": service_id, "start": start, "end": end, "openings": openings[:20], "total": len(openings)}
+    except requests.HTTPError as e:
+        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
 
 
 @mcp.tool()
