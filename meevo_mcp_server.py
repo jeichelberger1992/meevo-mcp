@@ -133,7 +133,19 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
     if email:
         body["emailAddress"] = email
     try:
-        data = meevo_post("/publicapi/v1/clients/search", body)
+        last_error = None
+        data = None
+        for path in ["/publicapi/v1/clients/filter", "/publicapi/v1/clients/filtercriteria", "/publicapi/v1/clients"]:
+            try:
+                data = meevo_post(path, body)
+                break
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    last_error = e
+                    continue
+                raise
+        if data is None:
+            raise last_error
         clients = data.get("data") or data.get("Data") or _items(data)
         if not clients:
             return {"found": False, "raw_keys": list(data.keys()) if isinstance(data, dict) else str(data)[:300]}
