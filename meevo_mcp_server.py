@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v10")
+    return PlainTextResponse("OK v11")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -401,14 +401,17 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
     body = {
         "ClientId": client_id,
         "ServiceId": service_id,
-        "StartDateTime": start_datetime,
+        "StartTime": start_datetime,
     }
     if employee_id:
         body["EmployeeId"] = employee_id
     if notes:
         body["Notes"] = notes
     try:
-        result = meevo_post("/publicapi/v1/book/service", body)
+        r = requests.post(f"{BASE_URL}/publicapi/v1/book/service", params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
+        raw_text = r.text
+        r.raise_for_status()
+        result = r.json() if r.content else {"success": True}
         appt_svc_id = _get(result, "AppointmentServiceId", "appointmentServiceId", "Id", "id")
         appt_id = _get(result, "AppointmentId", "appointmentId")
         return {"success": True, "appointment_service_id": appt_svc_id, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
@@ -425,7 +428,7 @@ def reschedule_appointment(appointment_service_id: str, new_start_datetime: str,
     except requests.HTTPError as e:
         return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
-    body = {"StartDateTime": new_start_datetime}
+    body = {"StartTime": new_start_datetime}
     if employee_id:
         body["EmployeeId"] = employee_id
     if row_version:
