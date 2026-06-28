@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v11")
+    return PlainTextResponse("OK v12")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -396,8 +396,28 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
 
 
 @mcp.tool()
-def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", notes: str = "") -> dict:
-    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS."""
+def list_resources() -> dict:
+    """List all bookable resources (rooms, equipment, booths) required for certain services like spray tans."""
+    try:
+        data = meevo_get("/publicapi/v1/resources")
+        items = data.get("data") or data.get("Data") or _items(data)
+        result = []
+        for r in items:
+            result.append({
+                "id": _str(r.get("id") or r.get("resourceId") or r.get("Id") or r.get("ResourceId")),
+                "name": _str(r.get("name") or r.get("displayName") or r.get("resourceName") or r.get("Name")),
+                "type": _str(r.get("resourceType") or r.get("type") or r.get("ResourceType") or ""),
+                "is_active": r.get("isActive", r.get("IsActive", True)),
+            })
+        return {"resources": result, "total": len(result), "raw_keys": list(data.keys()) if isinstance(data, dict) else None}
+    except requests.HTTPError as e:
+        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
+def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", resource_id: str = "", notes: str = "") -> dict:
+    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS.
+    Some services (e.g. spray tan) require a resource_id — call list_resources first to get it."""
     body = {
         "ClientId": client_id,
         "ServiceId": service_id,
@@ -405,11 +425,12 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
     }
     if employee_id:
         body["EmployeeId"] = employee_id
+    if resource_id:
+        body["ResourceId"] = resource_id
     if notes:
         body["Notes"] = notes
     try:
         r = requests.post(f"{BASE_URL}/publicapi/v1/book/service", params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
-        raw_text = r.text
         r.raise_for_status()
         result = r.json() if r.content else {"success": True}
         appt_svc_id = _get(result, "AppointmentServiceId", "appointmentServiceId", "Id", "id")
