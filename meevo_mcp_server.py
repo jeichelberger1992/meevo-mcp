@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v17")
+    return PlainTextResponse("OK v18")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -483,20 +483,44 @@ def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str 
     """Cancel an existing appointment service. Always confirm with the client first."""
     try:
         svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
+        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion",
+                           "Timestamp", "timestamp", "ETag", "etag")
+        svc_keys = list(svc.keys()) if isinstance(svc, dict) else str(svc)[:200]
     except requests.HTTPError as e:
         return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
-    extra = {}
+    # Try DELETE with ConcurrencyCheckDigits in both query params AND request body
+    base_params = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
     if concurrency:
-        extra["ConcurrencyCheckDigits"] = concurrency
+        base_params["ConcurrencyCheckDigits"] = concurrency
     if cancellation_reason_id:
-        extra["CancellationReasonId"] = cancellation_reason_id
+        base_params["CancellationReasonId"] = cancellation_reason_id
+
+    body = {}
+    if concurrency:
+        body["ConcurrencyCheckDigits"] = concurrency
+    if cancellation_reason_id:
+        body["CancellationReasonId"] = cancellation_reason_id
+
     try:
-        result = meevo_delete(f"/publicapi/v1/book/service/{appointment_service_id}", extra or None)
+        r = requests.delete(
+            f"{BASE_URL}/publicapi/v1/book/service/{appointment_service_id}",
+            params=base_params,
+            json=body if body else None,
+            headers=_auth_headers(),
+            timeout=15,
+        )
+        r.raise_for_status()
+        result = r.json() if r.content else {"success": True}
         return {"success": True, "appointment_service_id": appointment_service_id, "cancelled": True, "raw": result}
     except requests.HTTPError as e:
-        return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
+        return {
+            "success": False,
+            "error": str(e),
+            "response_body": e.response.text if e.response is not None else "",
+            "concurrency_found": _str(concurrency),
+            "svc_keys": svc_keys,
+        }
 
 
 @mcp.tool()
