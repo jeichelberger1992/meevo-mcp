@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v14")
+    return PlainTextResponse("OK v15")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -543,6 +543,84 @@ def list_staff(page: int = 1) -> dict:
             "is_active": "true",
         })
     return {"staff": result, "total": _str(len(staff))}
+
+
+@mcp.tool()
+def debug_scan_raw(service_id: str) -> dict:
+    """Return the raw first group and first opening from a scan, to inspect all available fields including resource IDs."""
+    from datetime import date
+    start = date.today().isoformat()
+    end = (date.today() + timedelta(days=3)).isoformat()
+    scan_svc = {
+        "clientId": "00000000-0000-0000-0000-000000000000",
+        "serviceId": service_id,
+        "employeeId": None,
+        "genderPreferenceEnum": 105,
+        "clientFirstName": "Guest",
+        "clientPhoneNumber": "0000000000",
+        "clientCountryCode": "1",
+        "isGuest": True,
+        "customServiceStepTimings": None,
+    }
+    body = {
+        "scanServices": [scan_svc],
+        "payingClientId": None,
+        "isRescan": False,
+        "scanOrigin": 1,
+        "maxOpeningsPerDay": 5,
+        "appointmentBufferMinutes": 0,
+        "maxStartTimeWait": 0,
+        "maxWaitTimeBetweenServices": 0,
+        "requireSameStartTime": True,
+        "requireSameResource": False,
+        "scanDateType": 2094,
+        "scanTimeType": 2095,
+        "startDate": f"{start}T00:00:00",
+        "endDate": f"{end}T23:59:59",
+        "isCouplesScan": False,
+        "isRestrictedToBookableOnline": True,
+    }
+    try:
+        r = requests.post(f"{OB_BASE}/scanforopenings", json=body, headers=_ob_headers(), timeout=20)
+        r.raise_for_status()
+        groups = r.json()
+        if not groups:
+            return {"groups": 0, "raw": str(groups)[:500]}
+        g0 = groups[0]
+        openings = g0.get("serviceOpenings") or []
+        o0 = openings[0] if openings else {}
+        return {
+            "group_keys": list(g0.keys()),
+            "group_sample": {k: v for k, v in g0.items() if k != "serviceOpenings"},
+            "opening_keys": list(o0.keys()),
+            "opening_sample": o0,
+            "total_groups": len(groups),
+            "total_openings_in_first_group": len(openings),
+        }
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
+def get_ob_resources(service_id: str = "") -> dict:
+    """Try to fetch resource list from OB API endpoints."""
+    results = {}
+    paths = [
+        "/resources",
+        f"/services/{service_id}/resources" if service_id else None,
+        "/customdata/control/list",
+    ]
+    for path in paths:
+        if not path:
+            continue
+        try:
+            r = requests.get(f"{OB_BASE}{path}",
+                             params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
+                             headers=_ob_headers(), timeout=10)
+            results[path] = {"status": r.status_code, "body": r.text[:800]}
+        except Exception as e:
+            results[path] = {"error": str(e)[:100]}
+    return results
 
 
 if __name__ == "__main__":
