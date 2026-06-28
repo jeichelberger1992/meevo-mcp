@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v16")
+    return PlainTextResponse("OK v17")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -462,15 +462,15 @@ def reschedule_appointment(appointment_service_id: str, new_start_datetime: str,
     """Reschedule an existing appointment service. new_start_datetime format: YYYY-MM-DDTHH:MM:SS."""
     try:
         svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-        row_version = _get(svc, "RowVersion", "rowVersion")
+        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
     except requests.HTTPError as e:
         return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
     body = {"StartTime": new_start_datetime}
     if employee_id:
         body["EmployeeId"] = employee_id
-    if row_version:
-        body["RowVersion"] = row_version
+    if concurrency:
+        body["ConcurrencyCheckDigits"] = concurrency
     try:
         result = meevo_put(f"/publicapi/v1/book/service/{appointment_service_id}", body)
         return {"success": True, "appointment_service_id": appointment_service_id, "new_start_datetime": new_start_datetime, "raw": result}
@@ -483,13 +483,13 @@ def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str 
     """Cancel an existing appointment service. Always confirm with the client first."""
     try:
         svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-        row_version = _get(svc, "RowVersion", "rowVersion")
+        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
     except requests.HTTPError as e:
         return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
     extra = {}
-    if row_version:
-        extra["RowVersion"] = row_version
+    if concurrency:
+        extra["ConcurrencyCheckDigits"] = concurrency
     if cancellation_reason_id:
         extra["CancellationReasonId"] = cancellation_reason_id
     try:
