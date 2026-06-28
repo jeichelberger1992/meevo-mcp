@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v15")
+    return PlainTextResponse("OK v16")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -381,9 +381,9 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
                     "employee_name": o.get("employeeDisplayName") or o.get("employeeName") or "",
                     "resource_id": o.get("resourceId") or o.get("ResourceId") or "",
                     "resource_name": o.get("resourceName") or o.get("ResourceName") or "",
+                    "concurrency_check_digits": o.get("concurrencyCheckDigits") or o.get("ConcurrencyCheckDigits") or "",
                     "service_name": o.get("serviceName"),
                     "price": o.get("serviceBasePrice"),
-                    "_raw_keys": list(o.keys()),  # temporary — remove once resource fields confirmed
                 })
         return {
             "service_id": service_id,
@@ -428,9 +428,9 @@ def list_resources() -> dict:
 
 
 @mcp.tool()
-def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", resource_id: str = "", notes: str = "") -> dict:
+def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", resource_id: str = "", concurrency_check_digits: str = "", notes: str = "") -> dict:
     """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS.
-    Some services (e.g. spray tan) require a resource_id — call list_resources first to get it."""
+    Pass resource_id and concurrency_check_digits from check_availability results — required for most services."""
     body = {
         "ClientId": client_id,
         "ServiceId": service_id,
@@ -442,6 +442,8 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         body["EmployeeId"] = employee_id
     if resource_id:
         body["ResourceId"] = resource_id
+    if concurrency_check_digits:
+        body["ConcurrencyCheckDigits"] = concurrency_check_digits
     if notes:
         body["Notes"] = notes
     try:
