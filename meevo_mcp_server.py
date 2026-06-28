@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v18")
+    return PlainTextResponse("OK v19")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -458,13 +458,16 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
 
 
 @mcp.tool()
-def reschedule_appointment(appointment_service_id: str, new_start_datetime: str, employee_id: str = "") -> dict:
-    """Reschedule an existing appointment service. new_start_datetime format: YYYY-MM-DDTHH:MM:SS."""
-    try:
-        svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
-    except requests.HTTPError as e:
-        return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
+def reschedule_appointment(appointment_service_id: str, new_start_datetime: str, employee_id: str = "", concurrency_check_digits: str = "") -> dict:
+    """Reschedule an existing appointment service. new_start_datetime format: YYYY-MM-DDTHH:MM:SS.
+    Pass concurrency_check_digits if you have it."""
+    concurrency = concurrency_check_digits
+    if not concurrency:
+        try:
+            svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
+            concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
     body = {"StartTime": new_start_datetime}
     if employee_id:
@@ -479,17 +482,21 @@ def reschedule_appointment(appointment_service_id: str, new_start_datetime: str,
 
 
 @mcp.tool()
-def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str = "") -> dict:
-    """Cancel an existing appointment service. Always confirm with the client first."""
-    try:
-        svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-        concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion",
-                           "Timestamp", "timestamp", "ETag", "etag")
-        svc_keys = list(svc.keys()) if isinstance(svc, dict) else str(svc)[:200]
-    except requests.HTTPError as e:
-        return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
+def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str = "", concurrency_check_digits: str = "") -> dict:
+    """Cancel an existing appointment service. Always confirm with the client first.
+    Pass concurrency_check_digits if you have it from a prior booking or scan result."""
+    # Try to fetch from API if not provided
+    concurrency = concurrency_check_digits
+    svc_keys = []
+    if not concurrency:
+        try:
+            svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
+            concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion",
+                               "Timestamp", "timestamp", "ETag", "etag")
+            svc_keys = list(svc.keys()) if isinstance(svc, dict) else []
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
 
-    # Try DELETE with ConcurrencyCheckDigits in both query params AND request body
     base_params = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
     if concurrency:
         base_params["ConcurrencyCheckDigits"] = concurrency
@@ -518,7 +525,7 @@ def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str 
             "success": False,
             "error": str(e),
             "response_body": e.response.text if e.response is not None else "",
-            "concurrency_found": _str(concurrency),
+            "concurrency_used": _str(concurrency),
             "svc_keys": svc_keys,
         }
 
