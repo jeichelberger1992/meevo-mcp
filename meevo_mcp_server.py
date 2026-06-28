@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v13")
+    return PlainTextResponse("OK v14")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -435,6 +435,8 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         "ClientId": client_id,
         "ServiceId": service_id,
         "StartTime": start_datetime,
+        "SendConfirmation": True,
+        "SendClientNotification": True,
     }
     if employee_id:
         body["EmployeeId"] = employee_id
