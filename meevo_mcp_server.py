@@ -148,7 +148,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v12")
+    return PlainTextResponse("OK v13")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -379,8 +379,11 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
                     "end_time": (o.get("endTime") or "")[11:16],
                     "employee_id": o.get("employeeId"),
                     "employee_name": o.get("employeeDisplayName") or o.get("employeeName") or "",
+                    "resource_id": o.get("resourceId") or o.get("ResourceId") or "",
+                    "resource_name": o.get("resourceName") or o.get("ResourceName") or "",
                     "service_name": o.get("serviceName"),
                     "price": o.get("serviceBasePrice"),
+                    "_raw_keys": list(o.keys()),  # temporary — remove once resource fields confirmed
                 })
         return {
             "service_id": service_id,
@@ -397,21 +400,31 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
 
 @mcp.tool()
 def list_resources() -> dict:
-    """List all bookable resources (rooms, equipment, booths) required for certain services like spray tans."""
+    """List all bookable resources (rooms, equipment, booths) required for certain services like spray tans.
+    Also tries the OB API for resource data."""
+    results = {}
+    for path in ["/publicapi/v1/resources", "/publicapi/v1/resource", "/publicapi/v1/resourcetypes"]:
+        try:
+            data = meevo_get(path)
+            items = data.get("data") or data.get("Data") or _items(data)
+            out = []
+            for r in (items if isinstance(items, list) else []):
+                out.append({
+                    "id": _str(r.get("id") or r.get("resourceId") or r.get("Id") or r.get("ResourceId")),
+                    "name": _str(r.get("name") or r.get("displayName") or r.get("resourceName") or r.get("Name")),
+                    "type": _str(r.get("resourceType") or r.get("type") or r.get("ResourceType") or ""),
+                })
+            results[path] = {"status": "ok", "resources": out, "raw_keys": list(data.keys()) if isinstance(data, dict) else None}
+        except requests.HTTPError as e:
+            results[path] = {"status": e.response.status_code if e.response else "error"}
+    # also try OB API
     try:
-        data = meevo_get("/publicapi/v1/resources")
-        items = data.get("data") or data.get("Data") or _items(data)
-        result = []
-        for r in items:
-            result.append({
-                "id": _str(r.get("id") or r.get("resourceId") or r.get("Id") or r.get("ResourceId")),
-                "name": _str(r.get("name") or r.get("displayName") or r.get("resourceName") or r.get("Name")),
-                "type": _str(r.get("resourceType") or r.get("type") or r.get("ResourceType") or ""),
-                "is_active": r.get("isActive", r.get("IsActive", True)),
-            })
-        return {"resources": result, "total": len(result), "raw_keys": list(data.keys()) if isinstance(data, dict) else None}
-    except requests.HTTPError as e:
-        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
+        r = requests.get(f"{OB_BASE}/resources", params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
+                         headers=_ob_headers(), timeout=10)
+        results["ob_resources"] = {"status": r.status_code, "body": r.text[:500]}
+    except Exception as e:
+        results["ob_resources"] = {"error": str(e)[:200]}
+    return results
 
 
 @mcp.tool()
