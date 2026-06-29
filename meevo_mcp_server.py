@@ -5,11 +5,15 @@ Exposes Meevo API endpoints as MCP tools so Conduit's AI agent
 can look up clients, appointments, and services in real-time,
 and book, reschedule, or cancel appointments.
 
-Version: v10 - maxOpeningsPerDay 100, no buffer, return cap 200
+Version: v23 - SFTP-based appointment lookup via Meevo DDS feed
 """
 
+import base64
+import csv
+import io
 import os
 import re
+import tempfile
 import time
 import requests
 from datetime import date, timedelta
@@ -22,7 +26,11 @@ BASE_URL     = os.environ.get("MEEVO_BASE_URL",     "https://d18devpub.meevodev.
 TENANT_ID    = os.environ.get("MEEVO_TENANT_ID",    "4")
 LOCATION_ID  = os.environ.get("MEEVO_LOCATION_ID",  "3")
 
-# Derive the OB API base URL from BASE_URL (na2pub.meevo.com -> na2.meevo.com)
+SFTP_HOST    = os.environ.get("MEEVO_SFTP_HOST",    "cdcsftp.meevo.com")
+SFTP_USER    = os.environ.get("MEEVO_SFTP_USER",    "JacquelynsSpa")
+SFTP_KEY_B64 = os.environ.get("MEEVO_SFTP_KEY_B64", "")  # base64-encoded RSA private key
+SFTP_PATH    = os.environ.get("MEEVO_SFTP_PATH",    "/pmvo2-cdcsftp-storage01/MeevoTemp/SFTP/JacquelynsSpa")
+
 def _ob_base():
     host = BASE_URL.rstrip("/")
     host = re.sub(r'pub\.meevo\.com', '.meevo.com', host)
@@ -33,7 +41,6 @@ OB_BASE = _ob_base()
 
 _token = None
 _token_expiry = 0.0
-
 _ob_token = None
 _ob_token_expiry = 0.0
 
@@ -55,8 +62,6 @@ def _auth_headers():
 
 
 def get_ob_token():
-    """Get a bearer token from the OB API session endpoint.
-    The OB session endpoint is public but requires browser-like headers (blocks python-requests UA)."""
     global _ob_token, _ob_token_expiry
     if _ob_token and time.time() < _ob_token_expiry:
         return _ob_token
@@ -66,12 +71,9 @@ def get_ob_token():
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": f"https://na2.meevo.com/CustomerPortal/onlinebooking/booking/services?tenantId={TENANT_ID}&locationId={LOCATION_ID}",
             "Origin": "https://na2.meevo.com",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
         },
         timeout=10,
     )
@@ -102,20 +104,8 @@ def _cap_params(extra=None):
     return p
 
 
-def meevo_post(path, body):
-    r = requests.post(f"{BASE_URL}{path}", params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
-    r.raise_for_status()
-    return r.json() if r.content else {"success": True}
-
-
 def meevo_put(path, body, extra_params=None):
     r = requests.put(f"{BASE_URL}{path}", params=_cap_params(extra_params), json=body, headers=_auth_headers(), timeout=15)
-    r.raise_for_status()
-    return r.json() if r.content else {"success": True}
-
-
-def meevo_delete(path, extra_params=None):
-    r = requests.delete(f"{BASE_URL}{path}", params=_cap_params(extra_params), headers=_auth_headers(), timeout=15)
     r.raise_for_status()
     return r.json() if r.content else {"success": True}
 
@@ -148,57 +138,42 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v19")
+    return PlainTextResponse("OK v23")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
 async def test_ob(request):
     from starlette.responses import JSONResponse
     global _ob_token, _ob_token_expiry
-    # Force refresh
     _ob_token = None
     _ob_token_expiry = 0.0
     try:
         tok = get_ob_token()
         return JSONResponse({"success": True, "ob_base": OB_BASE, "token_len": len(tok) if tok else 0})
-    except requests.HTTPError as e:
-        return JSONResponse({"success": False, "ob_base": OB_BASE, "http_status": e.response.status_code if e.response else None, "error": str(e)[:200], "body": e.response.text[:200] if e.response else ""})
     except Exception as e:
         return JSONResponse({"success": False, "ob_base": OB_BASE, "error": str(e)[:300]})
 
 
 @mcp.tool()
 def debug_ob_session() -> dict:
-    """Debug the OB API session endpoint — tries multiple URL patterns and methods to find what works."""
+    """Debug the OB API session endpoint."""
     body = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
     tok = get_token()
-    hdrs_bare = {"Content-Type": "application/json", "Accept": "application/json"}
-    hdrs_auth = {**hdrs_bare, "Authorization": f"Bearer {tok}"}
-    results = {"ob_base_derived": OB_BASE, "pub_base": BASE_URL, "body": body}
-
-    candidates = [
-        # (label, method, url)
-        ("patch_na2_ob",    "PATCH", f"https://na2.meevo.com/onlinebooking/api/ob/session"),
-        ("patch_na2pub_ob", "PATCH", f"https://na2pub.meevo.com/onlinebooking/api/ob/session"),
-        ("post_na2_ob",     "POST",  f"https://na2.meevo.com/onlinebooking/api/ob/session"),
-        ("patch_na2_v2",    "PATCH", f"https://na2.meevo.com/onlinebooking/api/v2/ob/session"),
-        ("patch_na2_bare",  "PATCH", f"https://na2.meevo.com/ob/session"),
-        ("patch_na2pub_v1", "PATCH", f"https://na2pub.meevo.com/api/ob/session"),
-    ]
-    for label, method, url in candidates:
-        for auth_label, hdrs in [("no_auth", hdrs_bare), ("with_auth", hdrs_auth)]:
-            key = f"{label}_{auth_label}"
-            try:
-                fn = requests.patch if method == "PATCH" else requests.post
-                r = fn(url, json=body, headers=hdrs, timeout=8)
-                results[key] = {"url": url, "status": r.status_code, "body": r.text[:300]}
-                if r.status_code < 400:
-                    results["SUCCESS"] = key
-                    break
-            except Exception as e:
-                results[key] = {"url": url, "error": str(e)[:100]}
-        if "SUCCESS" in results:
-            break
+    hdrs = {"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {tok}"}
+    results = {"ob_base_derived": OB_BASE, "pub_base": BASE_URL}
+    for label, method, url in [
+        ("patch_na2_ob", "PATCH", "https://na2.meevo.com/onlinebooking/api/ob/session"),
+        ("post_na2_ob",  "POST",  "https://na2.meevo.com/onlinebooking/api/ob/session"),
+    ]:
+        try:
+            fn = requests.patch if method == "PATCH" else requests.post
+            r = fn(url, json=body, headers=hdrs, timeout=8)
+            results[label] = {"status": r.status_code, "body": r.text[:300]}
+            if r.status_code < 400:
+                results["SUCCESS"] = label
+                break
+        except Exception as e:
+            results[label] = {"error": str(e)[:100]}
     return results
 
 
@@ -209,15 +184,15 @@ def debug_api(path: str) -> dict:
         data = meevo_get(path)
         sample = data
         if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
-            sample = {"envelope_keys": list(data.keys()), "first_item_keys": list(data["data"][0].keys()), "first_item": data["data"][0], "total_items": len(data["data"])}
-        return {"path": path, "type": type(data).__name__, "keys": list(data.keys()) if isinstance(data, dict) else None, "length": len(data) if isinstance(data, (list, dict)) else None, "sample": str(sample)[:3000]}
+            sample = {"envelope_keys": list(data.keys()), "first_item": data["data"][0], "total": len(data["data"])}
+        return {"path": path, "keys": list(data.keys()) if isinstance(data, dict) else None, "sample": str(sample)[:3000]}
     except requests.HTTPError as e:
         return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
 
 
 @mcp.tool()
 def search_clients(last_name: str = "", first_name: str = "", phone: str = "", email: str = "") -> dict:
-    """Search for Meevo clients by name, phone, or email. Fetches up to 100 pages and filters locally."""
+    """Search for Meevo clients by name, phone, or email."""
     import re as _re
     clean_phone = _re.sub(r'\D', '', phone).lstrip('1')
     try:
@@ -232,7 +207,7 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
                 if page_num > 1:
                     break
                 raise
-            batch = _items(data)
+      2     batch = _items(data)
             if not batch:
                 break
             all_clients.extend(batch)
@@ -255,19 +230,19 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
                 continue
             matches.append(c)
         if not matches:
-            return {"found": False, "searched": len(all_clients), "message": f"No clients matching criteria in {len(all_clients)} records fetched."}
-        results = []
+            return {"found": False, "searched": len(all_clients), "message": f"No clients matching in {len(all_clients)} records."}
+        out = []
         for c in matches[:5]:
             phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
-            results.append({
+            out.append({
                 "client_id": _get(c, "id", "clientId", "Id", "ClientId"),
                 "name": f"{_get(c, 'firstName', 'FirstName')} {_get(c, 'lastName', 'LastName')}".strip(),
                 "email": _get(c, "emailAddress", "email", "Email", "EmailAddress"),
                 "phones": [_get(p, "number", "Number", "phoneNumber", "PhoneNumber") for p in phones],
             })
-        return {"found": True, "clients": results, "total_matches": len(matches), "total_searched": len(all_clients)}
+        return {"found": True, "clients": out, "total_matches": len(matches), "total_searched": len(all_clients)}
     except requests.HTTPError as e:
-        return {"error": str(e), "status": e.response.status_code if e.response else None, "body": e.response.text[:500] if e.response else ""}
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
 
 
 @mcp.tool()
@@ -279,57 +254,197 @@ def lookup_client(phone: str = "", email: str = "") -> dict:
     data = meevo_get("/publicapi/v1/clients", {"PhoneNumber": clean_phone} if phone else {"Email": email})
     items = _items(data)
     if not items:
-        return {"found": False, "message": f"No client found for {phone or email}.", "raw_keys": list(data.keys()) if isinstance(data, dict) else str(data)[:200]}
+        return {"found": False, "message": f"No client found for {phone or email}."}
     c = items[0]
     phones = c.get("PhoneNumbers") or c.get("phoneNumbers") or []
-    first = _get(c, "FirstName", "firstName")
-    last = _get(c, "LastName", "lastName")
     return {
         "found": True,
         "client_id": _get(c, "ClientId", "clientId", "Id", "id"),
-        "name": f"{first} {last}".strip(),
+        "name": f"{_get(c, 'FirstName', 'firstName')} {_get(c, 'LastName', 'lastName')}".strip(),
         "email": _get(c, "Email", "email", "EmailAddress", "emailAddress"),
         "phones": [_get(p, "Number", "number", "PhoneNumber", "phoneNumber") for p in phones],
         "birth_date": _get(c, "BirthDate", "birthDate"),
         "notes": _get(c, "Notes", "notes"),
-        "is_active": c.get("IsActive") if c.get("IsActive") is not None else c.get("isActive", True),
     }
 
 
+def _sftp_connect():
+    """Return an open paramiko SFTP client using the base64-encoded key from env."""
+    import paramiko
+    key_b64 = SFTP_KEY_B64
+    if not key_b64:
+        raise RuntimeError("MEEVO_SFTP_KEY_B64 env var not set")
+    key_bytes = base64.b64decode(key_b64)
+    key = paramiko.RSAKey.from_private_key(io.StringIO(key_bytes.decode()))
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(SFTP_HOST, username=SFTP_USER, pkey=key, timeout=20)
+    return ssh, ssh.open_sftp()
+
+
 @mcp.tool()
-def get_client_appointments(client_id: str, days_back: int = 90, days_ahead: int = 60) -> dict:
-    """Get upcoming and recent appointments for a Meevo client."""
-    start = (date.today() - timedelta(days=days_back)).isoformat()
-    end = (date.today() + timedelta(days=days_ahead)).isoformat()
-    data = meevo_get("/publicapi/v1/appointments", {"ClientId": client_id, "StartDate": start, "EndDate": end, "ItemsPerPage": 25})
-    appts = _items(data)
-    today = date.today().isoformat()
-    upcoming, past = [], []
-    for a in appts:
-        dt = _get(a, "StartDateTime", "startDateTime", "Date", "date")
-        entry = {
-            "appointment_id": _get(a, "AppointmentId", "appointmentId", "Id", "id"),
-            "appointment_service_id": _get(a, "AppointmentServiceId", "appointmentServiceId"),
-            "date": dt,
-            "service": _get(a, "ServiceName", "serviceName", "Service", "service"),
-            "staff": _get(a, "EmployeeName", "employeeName", "Employee", "employee"),
-            "status": _get(a, "StatusDescription", "statusDescription", "Status", "status"),
-            "duration_minutes": _get(a, "Duration", "duration", "DurationMinutes", "durationMinutes"),
+def get_client_appointments(client_id: str, start_date: str = "", end_date: str = "") -> dict:
+    """Get upcoming appointments for a client via Meevo DDS SFTP feed.
+    Returns appointment_service_id and concurrency_check_digits needed for cancel/reschedule.
+    start_date/end_date: YYYY-MM-DD (defaults to today through next 90 days)."""
+    sd = date.fromisoformat(start_date) if start_date else date.today()
+    ed = date.fromisoformat(end_date) if end_date else (date.today() + timedelta(days=90))
+    try:
+        ssh, sftp = _sftp_connect()
+    except Exception as e:
+        return {"error": f"SFTP connect failed: {e}", "appointments": [], "count": 0}
+
+    try:
+        # List files in the SFTP directory
+        files = sftp.listdir(SFTP_PATH)
+        # Look for appointment-related files (csv/txt), prefer most recent
+        appt_files = sorted(
+            [f for f in files if "appoint" in f.lower() or "appt" in f.lower() or "booking" in f.lower()],
+            reverse=True
+        )
+        if not appt_files:
+            # Fall back: list all files and return them for discovery
+            return {"error": "No appointment files found", "available_files": files[:30], "appointments": [], "count": 0}
+
+        results = []
+        tried_files = []
+        for fname in appt_files[:3]:  # Try up to 3 most recent appointment files
+            fpath = f"{SFTP_PATH}/{fname}"
+            tried_files.append(fname)
+            try:
+                with sftp.open(fpath, "r") as f:
+                    content = f.read().decode("utf-8", errors="replace")
+                reader = csv.DictReader(io.StringIO(content))
+                for row in reader:
+                    # Match by client_id (try multiple column names)
+                    row_client = (row.get("ClientId") or row.get("clientId") or
+                                  row.get("ClientGuid") or row.get("clientGuid") or "")
+                    if row_client.lower() != client_id.lower():
+                        continue
+                    # Parse date
+                    appt_dt_str = (row.get("StartTime") or row.get("startTime") or
+                                   row.get("StartDate") or row.get("startDate") or "")
+                    try:
+                        appt_dt = date.fromisoformat(appt_dt_str[:10])
+                        if not (sd <= appt_dt <= ed):
+                            continue
+                    except Exception:
+                        pass  # Include if we can't parse the date
+                    results.append({
+                        "appointment_id": row.get("AppointmentId") or row.get("appointmentId") or "",
+                        "appointment_service_id": (row.get("AppointmentServiceId") or
+                                                   row.get("appointmentServiceId") or ""),
+                        "service_name": row.get("ServiceName") or row.get("serviceName") or "",
+                        "employee_name": (row.get("EmployeeName") or row.get("employeeName") or
+                                          row.get("EmployeeFirstName") or ""),
+                        "start_time": appt_dt_str,
+                        "status": row.get("Status") or row.get("status") or "",
+                        "concurrency_check_digits": (row.get("ConcurrencyCheckDigits") or
+                                                     row.get("concurrencyCheckDigits") or
+                                                     row.get("RowVersion") or ""),
+                    })
+                if results:
+                    break
+            except Exception as e:
+                tried_files[-1] += f" (err: {e})"
+
+        # If no results yet, return sample of first file for discovery
+        sample = {}
+        if not results and appt_files:
+            try:
+                with sftp.open(f"{SFTP_PATH}/{appt_files[0]}", "r") as f:
+                    sample_lines = f.read(2000).decode("utf-8", errors="replace")
+                sample = {"first_file_sample": sample_lines}
+            except Exception:
+                pass
+
+        return {
+            "appointments": results,
+            "count": len(results),
+            "date_range": f"{sd} to {ed}",
+            "files_tried": tried_files,
+            **sample,
         }
-        if dt >= today:
-            upcoming.append(entry)
-        else:
-            past.append(entry)
-    return {"client_id": client_id, "upcoming_appointments": upcoming[:10], "recent_visits": past[-10:], "total_past_visits": len(past)}
+    finally:
+        sftp.close()
+        ssh.close()
+
+
+def _get_client_appointments_api(client_id: str, start_date: str = "", end_date: str = "") -> dict:
+    """Get upcoming/recent appointments for a client. Returns appointment_service_id and concurrency_check_digits
+    needed for cancel or reschedule. start_date/end_date: YYYY-MM-DD (defaults to next 90 days)."""
+    sd = start_date or date.today().isoformat()
+    ed = end_date or (date.today() + timedelta(days=90)).isoformat()
+    results = []
+    tried = {}
+
+    def _parse_appts(data):
+        out = []
+        items = data.get("data") or data.get("Data") or _items(data)
+        if not items:
+            return out
+        for appt in items:
+            svc_list = appt.get("appointmentServices") or appt.get("AppointmentServices") or [appt]
+            for svc in svc_list:
+                out.append({
+                    "appointment_id": _str(_get(appt, "appointmentId", "AppointmentId", "id", "Id")),
+                    "appointment_service_id": _str(_get(svc, "appointmentServiceId", "AppointmentServiceId", "id", "Id")),
+                    "service_name": _str(_get(svc, "serviceName", "ServiceName", "serviceDisplayName")),
+                    "employee_name": _str(_get(svc, "employeeName", "EmployeeName", "employeeDisplayName")),
+                    "start_time": _str(_get(svc, "startTime", "StartTime", "startDateTime", "StartDateTime")),
+                    "status": _str(_get(svc, "status", "Status", "appointmentStatus")),
+                    "concurrency_check_digits": _str(_get(svc, "concurrencyCheckDigits", "ConcurrencyCheckDigits", "rowVersion", "RowVersion")),
+                })
+        return out
+
+    # Try publicapi paths
+    for path, params in [
+        ("/publicapi/v1/appointments", {"clientId": client_id, "startDate": sd, "endDate": ed}),
+        ("/publicapi/v1/appointments", {"ClientId": client_id, "StartDate": sd, "EndDate": ed}),
+        (f"/publicapi/v1/clients/{client_id}/appointments", {"startDate": sd, "endDate": ed}),
+        ("/publicapi/v1/book/service", {"clientId": client_id, "startDate": sd, "endDate": ed, "TenantId": TENANT_ID, "LocationId": LOCATION_ID}),
+        ("/publicapi/v1/bookings", {"clientId": client_id, "startDate": sd, "endDate": ed}),
+        (f"/publicapi/v1/clients/{client_id}/bookings", {"startDate": sd, "endDate": ed}),
+    ]:
+        try:
+            data = meevo_get(path, params)
+            parsed = _parse_appts(data)
+            if parsed:
+                tried[path] = f"ok ({len(parsed)} appts)"
+                results = parsed
+                break
+            else:
+                tried[path] = f"empty: {str(data)[:100]}"
+        except requests.HTTPError as e:
+            tried[path] = f"{e.response.status_code}: {e.response.text[:100]}" if e.response else str(e)[:80]
+        except Exception as e:
+            tried[path] = str(e)[:80]
+
+    # If still nothing, try OB API
+    if not results:
+        try:
+            r = requests.get(
+                f"{OB_BASE}/appointments",
+                params={"ClientId": client_id, "TenantId": TENANT_ID, "LocationId": LOCATION_ID,
+                        "StartDate": sd, "EndDate": ed},
+                headers=_ob_headers(), timeout=15
+            )
+            tried["ob_appointments"] = f"{r.status_code}: {r.text[:100]}"
+            if r.ok:
+                parsed = _parse_appts(r.json() if r.content else {})
+                if parsed:
+                    results = parsed
+        except Exception as e:
+            tried["ob_appointments"] = str(e)[:80]
+
+    return {"appointments": results, "count": len(results), "date_range": f"{sd} to {ed}", "tried": tried}
 
 
 @mcp.tool()
 def check_availability(service_id: str, check_date: str = "", days_ahead: int = 7, employee_id: str = "") -> dict:
-    """Check available appointment openings for a service using the Meevo Online Booking API.
-    check_date is YYYY-MM-DD (defaults to today). Returns up to 20 openings per day."""
+    """Check available appointment slots. check_date is YYYY-MM-DD (defaults today). Returns up to 200 openings."""
     start = check_date or date.today().isoformat()
     end = (date.fromisoformat(start) + timedelta(days=days_ahead)).isoformat()
-
     scan_svc = {
         "clientId": "00000000-0000-0000-0000-000000000000",
         "serviceId": service_id,
@@ -341,7 +456,6 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
         "isGuest": True,
         "customServiceStepTimings": None,
     }
-
     body = {
         "scanServices": [scan_svc],
         "payingClientId": None,
@@ -360,14 +474,8 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
         "isCouplesScan": False,
         "isRestrictedToBookableOnline": True,
     }
-
     try:
-        r = requests.post(
-            f"{OB_BASE}/scanforopenings",
-            json=body,
-            headers=_ob_headers(),
-            timeout=20,
-        )
+        r = requests.post(f"{OB_BASE}/scanforopenings", json=body, headers=_ob_headers(), timeout=20)
         r.raise_for_status()
         groups = r.json()
         all_openings = []
@@ -385,42 +493,27 @@ def check_availability(service_id: str, check_date: str = "", days_ahead: int = 
                     "service_name": o.get("serviceName"),
                     "price": o.get("serviceBasePrice"),
                 })
-        return {
-            "service_id": service_id,
-            "start": start,
-            "end": end,
-            "openings": all_openings[:200],
-            "total": len(all_openings),
-        }
+        return {"service_id": service_id, "start": start, "end": end, "openings": all_openings[:200], "total": len(all_openings)}
     except requests.HTTPError as e:
         return {"error": str(e), "response_body": e.response.text[:500] if e.response is not None else ""}
     except Exception as e:
-        return {"error": str(e), "service_id": service_id}
+        return {"error": str(e)}
 
 
 @mcp.tool()
 def list_resources() -> dict:
-    """List all bookable resources (rooms, equipment, booths) required for certain services like spray tans.
-    Also tries the OB API for resource data."""
+    """List bookable resources (rooms, booths) for services like spray tans."""
     results = {}
     for path in ["/publicapi/v1/resources", "/publicapi/v1/resource", "/publicapi/v1/resourcetypes"]:
         try:
             data = meevo_get(path)
             items = data.get("data") or data.get("Data") or _items(data)
-            out = []
-            for r in (items if isinstance(items, list) else []):
-                out.append({
-                    "id": _str(r.get("id") or r.get("resourceId") or r.get("Id") or r.get("ResourceId")),
-                    "name": _str(r.get("name") or r.get("displayName") or r.get("resourceName") or r.get("Name")),
-                    "type": _str(r.get("resourceType") or r.get("type") or r.get("ResourceType") or ""),
-                })
-            results[path] = {"status": "ok", "resources": out, "raw_keys": list(data.keys()) if isinstance(data, dict) else None}
+            out = [{"id": _str(r.get("id") or r.get("resourceId")), "name": _str(r.get("name") or r.get("displayName"))} for r in (items if isinstance(items, list) else [])]
+            results[path] = {"status": "ok", "resources": out}
         except requests.HTTPError as e:
             results[path] = {"status": e.response.status_code if e.response else "error"}
-    # also try OB API
     try:
-        r = requests.get(f"{OB_BASE}/resources", params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
-                         headers=_ob_headers(), timeout=10)
+        r = requests.get(f"{OB_BASE}/resources", params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID}, headers=_ob_headers(), timeout=10)
         results["ob_resources"] = {"status": r.status_code, "body": r.text[:500]}
     except Exception as e:
         results["ob_resources"] = {"error": str(e)[:200]}
@@ -429,14 +522,16 @@ def list_resources() -> dict:
 
 @mcp.tool()
 def book_appointment(client_id: str, service_id: str, start_datetime: str, employee_id: str = "", resource_id: str = "", concurrency_check_digits: str = "", notes: str = "") -> dict:
-    """Book a new appointment. start_datetime format: YYYY-MM-DDTHH:MM:SS.
-    Pass resource_id and concurrency_check_digits from check_availability results — required for most services."""
+    """Book a new appointment. start_datetime: YYYY-MM-DDTHH:MM:SS.
+    Pass resource_id and concurrency_check_digits from check_availability."""
     body = {
         "ClientId": client_id,
         "ServiceId": service_id,
         "StartTime": start_datetime,
         "SendConfirmation": True,
         "SendClientNotification": True,
+        "NotifyClient": True,
+        "BookingSource": 2,
     }
     if employee_id:
         body["EmployeeId"] = employee_id
@@ -450,25 +545,25 @@ def book_appointment(client_id: str, service_id: str, start_datetime: str, emplo
         r = requests.post(f"{BASE_URL}/publicapi/v1/book/service", params=_cap_params(), json=body, headers=_auth_headers(), timeout=15)
         r.raise_for_status()
         result = r.json() if r.content else {"success": True}
-        appt_svc_id = _get(result, "AppointmentServiceId", "appointmentServiceId", "Id", "id")
-        appt_id = _get(result, "AppointmentId", "appointmentId")
-        return {"success": True, "appointment_service_id": appt_svc_id, "appointment_id": appt_id, "client_id": client_id, "service_id": service_id, "start_datetime": start_datetime, "raw": result}
+        return {"success": True,
+                "appointment_service_id": _get(result, "AppointmentServiceId", "appointmentServiceId", "Id", "id"),
+                "appointment_id": _get(result, "AppointmentId", "appointmentId"),
+                "raw": result}
     except requests.HTTPError as e:
         return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
 
 
 @mcp.tool()
 def reschedule_appointment(appointment_service_id: str, new_start_datetime: str, employee_id: str = "", concurrency_check_digits: str = "") -> dict:
-    """Reschedule an existing appointment service. new_start_datetime format: YYYY-MM-DDTHH:MM:SS.
-    Pass concurrency_check_digits if you have it."""
+    """Reschedule an existing appointment. new_start_datetime: YYYY-MM-DDTHH:MM:SS.
+    Get concurrency_check_digits from get_client_appointments first."""
     concurrency = concurrency_check_digits
     if not concurrency:
         try:
             svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
             concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
         except requests.HTTPError as e:
-            return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
-
+            return {"success": False, "error": f"Could not fetch service: {e}", "response_body": e.response.text if e.response else ""}
     body = {"StartTime": new_start_datetime}
     if employee_id:
         body["EmployeeId"] = employee_id
@@ -483,179 +578,4 @@ def reschedule_appointment(appointment_service_id: str, new_start_datetime: str,
 
 @mcp.tool()
 def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str = "", concurrency_check_digits: str = "") -> dict:
-    """Cancel an existing appointment service. Always confirm with the client first.
-    Pass concurrency_check_digits if you have it from a prior booking or scan result."""
-    # Try to fetch from API if not provided
-    concurrency = concurrency_check_digits
-    svc_keys = []
-    if not concurrency:
-        try:
-            svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
-            concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion",
-                               "Timestamp", "timestamp", "ETag", "etag")
-            svc_keys = list(svc.keys()) if isinstance(svc, dict) else []
-        except requests.HTTPError as e:
-            return {"success": False, "error": f"Could not fetch appointment service: {e}", "response_body": e.response.text if e.response else ""}
-
-    base_params = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
-    if concurrency:
-        base_params["ConcurrencyCheckDigits"] = concurrency
-    if cancellation_reason_id:
-        base_params["CancellationReasonId"] = cancellation_reason_id
-
-    body = {}
-    if concurrency:
-        body["ConcurrencyCheckDigits"] = concurrency
-    if cancellation_reason_id:
-        body["CancellationReasonId"] = cancellation_reason_id
-
-    try:
-        r = requests.delete(
-            f"{BASE_URL}/publicapi/v1/book/service/{appointment_service_id}",
-            params=base_params,
-            json=body if body else None,
-            headers=_auth_headers(),
-            timeout=15,
-        )
-        r.raise_for_status()
-        result = r.json() if r.content else {"success": True}
-        return {"success": True, "appointment_service_id": appointment_service_id, "cancelled": True, "raw": result}
-    except requests.HTTPError as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "response_body": e.response.text if e.response is not None else "",
-            "concurrency_used": _str(concurrency),
-            "svc_keys": svc_keys,
-        }
-
-
-@mcp.tool()
-def list_services() -> dict:
-    """List all services offered at the spa with IDs, durations, and prices."""
-    try:
-        all_services = []
-        for page_num in range(1, 20):
-            data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num})
-            batch = data.get("data") or data.get("Data") or _items(data)
-            if not batch:
-                break
-            all_services.extend(batch)
-            if len(batch) < 20:
-                break
-        result = []
-        for s in all_services:
-            result.append({
-                "id": _str(s.get("id") or s.get("serviceId")),
-                "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name") or s.get("serviceName")),
-                "category": _str(s.get("categoryName") or s.get("category") or s.get("categoryDisplayName")),
-                "duration_minutes": _str(s.get("duration") or s.get("durationMinutes") or s.get("serviceDuration")),
-                "price": _str(s.get("price") or s.get("retailPrice") or s.get("servicePrice")),
-            })
-        return {"services": result, "total": _str(len(result))}
-    except requests.HTTPError as e:
-        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
-
-
-@mcp.tool()
-def list_staff(page: int = 1) -> dict:
-    """List all staff/employees at the spa with names and IDs."""
-    data = meevo_get("/publicapi/v1/employees")
-    staff = data.get("data") or data.get("Data") or _items(data)
-    result = []
-    for e in staff:
-        cats = e.get("employeeCategories")
-        if isinstance(cats, list) and cats and isinstance(cats[0], dict):
-            title = _str(cats[0].get("employeeCategoryDisplayName"))
-        else:
-            title = ""
-        result.append({
-            "id": _str(e.get("id") or e.get("employeeId")),
-            "name": (_str(e.get("firstName")) + " " + _str(e.get("lastName"))).strip(),
-            "title": title,
-            "is_active": "true",
-        })
-    return {"staff": result, "total": _str(len(staff))}
-
-
-@mcp.tool()
-def debug_scan_raw(service_id: str) -> dict:
-    """Return the raw first group and first opening from a scan, to inspect all available fields including resource IDs."""
-    from datetime import date
-    start = date.today().isoformat()
-    end = (date.today() + timedelta(days=3)).isoformat()
-    scan_svc = {
-        "clientId": "00000000-0000-0000-0000-000000000000",
-        "serviceId": service_id,
-        "employeeId": None,
-        "genderPreferenceEnum": 105,
-        "clientFirstName": "Guest",
-        "clientPhoneNumber": "0000000000",
-        "clientCountryCode": "1",
-        "isGuest": True,
-        "customServiceStepTimings": None,
-    }
-    body = {
-        "scanServices": [scan_svc],
-        "payingClientId": None,
-        "isRescan": False,
-        "scanOrigin": 1,
-        "maxOpeningsPerDay": 5,
-        "appointmentBufferMinutes": 0,
-        "maxStartTimeWait": 0,
-        "maxWaitTimeBetweenServices": 0,
-        "requireSameStartTime": True,
-        "requireSameResource": False,
-        "scanDateType": 2094,
-        "scanTimeType": 2095,
-        "startDate": f"{start}T00:00:00",
-        "endDate": f"{end}T23:59:59",
-        "isCouplesScan": False,
-        "isRestrictedToBookableOnline": True,
-    }
-    try:
-        r = requests.post(f"{OB_BASE}/scanforopenings", json=body, headers=_ob_headers(), timeout=20)
-        r.raise_for_status()
-        groups = r.json()
-        if not groups:
-            return {"groups": 0, "raw": str(groups)[:500]}
-        g0 = groups[0]
-        openings = g0.get("serviceOpenings") or []
-        o0 = openings[0] if openings else {}
-        return {
-            "group_keys": list(g0.keys()),
-            "group_sample": {k: v for k, v in g0.items() if k != "serviceOpenings"},
-            "opening_keys": list(o0.keys()),
-            "opening_sample": o0,
-            "total_groups": len(groups),
-            "total_openings_in_first_group": len(openings),
-        }
-    except requests.HTTPError as e:
-        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
-
-
-@mcp.tool()
-def get_ob_resources(service_id: str = "") -> dict:
-    """Try to fetch resource list from OB API endpoints."""
-    results = {}
-    paths = [
-        "/resources",
-        f"/services/{service_id}/resources" if service_id else None,
-        "/customdata/control/list",
-    ]
-    for path in paths:
-        if not path:
-            continue
-        try:
-            r = requests.get(f"{OB_BASE}{path}",
-                             params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID},
-                             headers=_ob_headers(), timeout=10)
-            results[path] = {"status": r.status_code, "body": r.text[:800]}
-        except Exception as e:
-            results[path] = {"error": str(e)[:100]}
-    return results
-
-
-if __name__ == "__main__":
-    mcp.settings.port = int(os.environ.get("PORT", 10000))
-    mcp.run(transport="streamable-http")
+    """Ca
