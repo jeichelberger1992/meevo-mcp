@@ -138,7 +138,7 @@ mcp = FastMCP("Meevo", host="0.0.0.0", stateless_http=True)
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
-    return PlainTextResponse("OK v23")
+    return PlainTextResponse("OK v24")
 
 
 @mcp.custom_route("/test_ob", methods=["GET"])
@@ -207,7 +207,7 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
                 if page_num > 1:
                     break
                 raise
-      2     batch = _items(data)
+            batch = _items(data)
             if not batch:
                 break
             all_clients.extend(batch)
@@ -247,25 +247,79 @@ def search_clients(last_name: str = "", first_name: str = "", phone: str = "", e
 
 @mcp.tool()
 def lookup_client(phone: str = "", email: str = "") -> dict:
-    """Look up a Meevo client by phone number or email address."""
+    """Look up a Meevo client by phone number or email address.
+
+    IMPORTANT: Meevo's /clients endpoint does NOT reliably filter by PhoneNumber
+    server-side — it ignores the param and returns the default first page. Blindly
+    taking the first record is why unknown numbers used to resolve to the wrong
+    client. So we page through clients and match locally on an EXACT phone (last 10
+    digits) or exact email. Returns found=False when there is no real match so the
+    agent creates a new client / asks for a name instead of guessing.
+    """
+    import re as _re
     if not phone and not email:
         return {"error": "Provide a phone number or email."}
-    clean_phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+1", "")
-    data = meevo_get("/publicapi/v1/clients", {"PhoneNumber": clean_phone} if phone else {"Email": email})
-    items = _items(data)
-    if not items:
-        return {"found": False, "message": f"No client found for {phone or email}."}
-    c = items[0]
-    phones = c.get("PhoneNumbers") or c.get("phoneNumbers") or []
-    return {
-        "found": True,
-        "client_id": _get(c, "ClientId", "clientId", "Id", "id"),
-        "name": f"{_get(c, 'FirstName', 'firstName')} {_get(c, 'LastName', 'lastName')}".strip(),
-        "email": _get(c, "Email", "email", "EmailAddress", "emailAddress"),
-        "phones": [_get(p, "Number", "number", "PhoneNumber", "phoneNumber") for p in phones],
-        "birth_date": _get(c, "BirthDate", "birthDate"),
-        "notes": _get(c, "Notes", "notes"),
-    }
+    target_phone = _re.sub(r'\D', '', phone).lstrip('1')[-10:] if phone else ""
+    target_email = email.strip().lower()
+
+    all_clients = []
+    try:
+        page_num = 1
+        page_size = None
+        while page_num <= 500:
+            try:
+                data = meevo_get("/publicapi/v1/clients", {"pageNumber": page_num})
+            except requests.HTTPError:
+                if page_num > 1:
+                    break
+                raise
+            batch = _items(data)
+            if not batch:
+                break
+            all_clients.extend(batch)
+            if page_size is None:
+                page_size = len(batch)
+            if len(batch) < (page_size or 1):
+                break
+            page_num += 1
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
+
+    def _phone_hit(c):
+        if not target_phone:
+            return False
+        for p in (c.get("phoneNumbers") or c.get("PhoneNumbers") or []):
+            digits = _re.sub(r'\D', '', _str(_get(p, "number", "Number", "phoneNumber", "PhoneNumber"))).lstrip('1')[-10:]
+            if digits and digits == target_phone:
+                return True
+        return False
+
+    def _email_hit(c):
+        if not target_email:
+            return False
+        return _str(_get(c, "emailAddress", "email", "Email", "EmailAddress")).lower() == target_email
+
+    matches = [c for c in all_clients if (_phone_hit(c) or _email_hit(c))]
+
+    def _shape(c):
+        phones = c.get("phoneNumbers") or c.get("PhoneNumbers") or []
+        return {
+            "client_id": _get(c, "ClientId", "clientId", "Id", "id"),
+            "name": f"{_get(c, 'FirstName', 'firstName')} {_get(c, 'LastName', 'lastName')}".strip(),
+            "email": _get(c, "Email", "email", "EmailAddress", "emailAddress"),
+            "phones": [_get(p, "Number", "number", "PhoneNumber", "phoneNumber") for p in phones],
+            "birth_date": _get(c, "BirthDate", "birthDate"),
+            "notes": _get(c, "Notes", "notes"),
+        }
+
+    if not matches:
+        return {"found": False, "searched": len(all_clients),
+                "message": f"No client found for {phone or email}. Create a new client or ask the texter for their name — do NOT book under an existing client."}
+    if len(matches) > 1:
+        return {"found": True, "ambiguous": True, "match_count": len(matches),
+                "clients": [_shape(c) for c in matches[:5]],
+                "message": "Multiple clients share this contact info. Confirm the client's name before booking."}
+    return {"found": True, **_shape(matches[0])}
 
 
 def _sftp_connect():
@@ -578,4 +632,125 @@ def reschedule_appointment(appointment_service_id: str, new_start_datetime: str,
 
 @mcp.tool()
 def cancel_appointment(appointment_service_id: str, cancellation_reason_id: str = "", concurrency_check_digits: str = "") -> dict:
-    """Ca
+    """Cancel an appointment. Always confirm with client first.
+    Get concurrency_check_digits from get_client_appointments first."""
+    concurrency = concurrency_check_digits
+    if not concurrency:
+        try:
+            svc = meevo_get(f"/publicapi/v1/book/service/{appointment_service_id}")
+            concurrency = _get(svc, "ConcurrencyCheckDigits", "concurrencyCheckDigits", "RowVersion", "rowVersion")
+        except requests.HTTPError as e:
+            return {"success": False, "error": f"Could not fetch service: {e}", "response_body": e.response.text if e.response else ""}
+    params = {"TenantId": int(TENANT_ID), "LocationId": int(LOCATION_ID)}
+    if concurrency:
+        params["ConcurrencyCheckDigits"] = concurrency
+    if cancellation_reason_id:
+        params["CancellationReasonId"] = cancellation_reason_id
+    try:
+        r = requests.delete(f"{BASE_URL}/publicapi/v1/book/service/{appointment_service_id}",
+                            params=params, headers=_auth_headers(), timeout=15)
+        r.raise_for_status()
+        return {"success": True, "appointment_service_id": appointment_service_id, "cancelled": True}
+    except requests.HTTPError as e:
+        return {"success": False, "error": str(e), "response_body": e.response.text if e.response is not None else ""}
+
+
+@mcp.tool()
+def list_services() -> dict:
+    """List all services at the spa with IDs, durations, and prices."""
+    try:
+        all_services = []
+        for page_num in range(1, 20):
+            data = meevo_get("/publicapi/v1/services", {"pageNumber": page_num})
+            batch = data.get("data") or data.get("Data") or _items(data)
+            if not batch:
+                break
+            all_services.extend(batch)
+            if len(batch) < 20:
+                break
+        result = [{"id": _str(s.get("id") or s.get("serviceId")),
+                   "name": _str(s.get("displayName") or s.get("serviceDisplayName") or s.get("name")),
+                   "category": _str(s.get("categoryName") or s.get("category")),
+                   "duration_minutes": _str(s.get("duration") or s.get("durationMinutes")),
+                   "price": _str(s.get("price") or s.get("retailPrice"))} for s in all_services]
+        return {"services": result, "total": str(len(result))}
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
+def list_staff(page: int = 1) -> dict:
+    """List all staff/employees at the spa."""
+    data = meevo_get("/publicapi/v1/employees")
+    staff = data.get("data") or data.get("Data") or _items(data)
+    result = []
+    for e in staff:
+        cats = e.get("employeeCategories")
+        title = _str(cats[0].get("employeeCategoryDisplayName")) if (isinstance(cats, list) and cats and isinstance(cats[0], dict)) else ""
+        result.append({"id": _str(e.get("id") or e.get("employeeId")),
+                       "name": (_str(e.get("firstName")) + " " + _str(e.get("lastName"))).strip(),
+                       "title": title})
+    return {"staff": result, "total": str(len(staff))}
+
+
+@mcp.tool()
+def debug_scan_raw(service_id: str) -> dict:
+    """Return raw scan opening fields for a service to inspect resource IDs and structure."""
+    start = date.today().isoformat()
+    end = (date.today() + timedelta(days=3)).isoformat()
+    scan_svc = {"clientId": "00000000-0000-0000-0000-000000000000", "serviceId": service_id,
+                "employeeId": None, "genderPreferenceEnum": 105, "clientFirstName": "Guest",
+                "clientPhoneNumber": "0000000000", "clientCountryCode": "1", "isGuest": True, "customServiceStepTimings": None}
+    body = {"scanServices": [scan_svc], "payingClientId": None, "isRescan": False, "scanOrigin": 1,
+            "maxOpeningsPerDay": 5, "appointmentBufferMinutes": 0, "maxStartTimeWait": 0,
+            "maxWaitTimeBetweenServices": 0, "requireSameStartTime": True, "requireSameResource": False,
+            "scanDateType": 2094, "scanTimeType": 2095, "startDate": f"{start}T00:00:00",
+            "endDate": f"{end}T23:59:59", "isCouplesScan": False, "isRestrictedToBookableOnline": True}
+    try:
+        r = requests.post(f"{OB_BASE}/scanforopenings", json=body, headers=_ob_headers(), timeout=20)
+        r.raise_for_status()
+        groups = r.json()
+        if not groups:
+            return {"groups": 0}
+        g0 = groups[0]
+        openings = g0.get("serviceOpenings") or []
+        o0 = openings[0] if openings else {}
+        return {"opening_keys": list(o0.keys()), "opening_sample": o0, "total_groups": len(groups), "total_openings": len(openings)}
+    except requests.HTTPError as e:
+        return {"error": str(e), "body": e.response.text[:500] if e.response else ""}
+
+
+@mcp.tool()
+def get_ob_resources(service_id: str = "") -> dict:
+    """Try to fetch resource list from OB API endpoints."""
+    results = {}
+    for path in ["/resources", f"/services/{service_id}/resources" if service_id else None]:
+        if not path:
+            continue
+        try:
+            r = requests.get(f"{OB_BASE}{path}", params={"TenantId": TENANT_ID, "LocationId": LOCATION_ID}, headers=_ob_headers(), timeout=10)
+            results[path] = {"status": r.status_code, "body": r.text[:800]}
+        except Exception as e:
+            results[path] = {"error": str(e)[:100]}
+    return results
+
+
+@mcp.tool()
+def send_appointment_notification(appointment_id: str = "", appointment_service_id: str = "", client_id: str = "") -> dict:
+    """Re-trigger Meevo native SMS/email notification for an appointment."""
+    results = {}
+    body = {"AppointmentId": appointment_id, "ClientId": client_id, "SendSms": True, "SendEmail": True}
+    for path in [f"/publicapi/v1/appointments/{appointment_id}/notify",
+                 f"/publicapi/v1/appointments/{appointment_id}/sendconfirmation",
+                 f"/publicapi/v1/book/service/{appointment_service_id}/notify"]:
+        try:
+            r = requests.post(f"{BASE_URL}{path}", params=_cap_params(), json=body, headers=_auth_headers(), timeout=10)
+            results[path] = {"status": r.status_code, "body": r.text[:300]}
+        except Exception as e:
+            results[path] = {"error": str(e)[:100]}
+    return results
+
+
+if __name__ == "__main__":
+    mcp.settings.port = int(os.environ.get("PORT", 10000))
+    mcp.run(transport="streamable-http")
